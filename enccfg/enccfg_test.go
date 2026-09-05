@@ -99,3 +99,64 @@ domains:
 		t.Errorf("a valid deployed document failed validation: %v", err)
 	}
 }
+
+// Usable answers false for an UNREGISTERED config, not just for a status that
+// says so. Asking "is it compromised" returns no when nothing is known, which
+// reads as healthy — the wrong direction for key material.
+// PRECONDITION: nothing has registered yet. The registry is process-global, so
+// this must precede any test that registers. It fails loudly rather than
+// silently if that is ever violated, which is why the ordering is documented
+// instead of worked around.
+func TestUsableFailsClosedOnAnUnknownConfig(t *testing.T) {
+	if Usable("sessions", "v2") {
+		t.Error("a version was usable with no config registered")
+	}
+	if _, found := Status("sessions", "v2"); found {
+		t.Error("Status reported a finding with no config registered")
+	}
+	if _, _, found := KeyMaterial("sessions", "v2"); found {
+		t.Error("KeyMaterial reported material with no config registered")
+	}
+}
+
+func TestRegisterRefusesAnInvalidConfig(t *testing.T) {
+	bad := Config{Domains: map[string]DomainKeys{
+		"sessions": {CurrentVersion: "v1", Keys: map[string]Key{
+			"v1": {Key: "cGxhaW4=", WrappedKey: "d3JhcHBlZA==", Status: "active"},
+		}},
+	}}
+	if err := Register(&bad); err == nil {
+		t.Error("a config carrying both key forms was registered")
+	}
+	if err := Register(nil); err == nil {
+		t.Error("a nil config was registered")
+	}
+}
+
+// Registered state: the accessors read what was stored, and Usable tracks the
+// recorded status rather than mere presence.
+func TestAccessorsReadRegisteredState(t *testing.T) {
+	cfg := valid()
+	if err := Register(&cfg); err != nil {
+		t.Fatalf("valid config refused: %v", err)
+	}
+	if got := CurrentVersion("sessions"); got != "v2" {
+		t.Errorf("CurrentVersion = %q, want v2", got)
+	}
+	mat, wrapped, found := KeyMaterial("sessions", "v2")
+	if !found || !wrapped || mat == "" {
+		t.Errorf("KeyMaterial(v2) = %q wrapped=%v found=%v", mat, wrapped, found)
+	}
+	if !Usable("sessions", "v2") {
+		t.Error("the active version was not usable")
+	}
+	if Usable("sessions", "v1") {
+		t.Error("an inactive version was usable for new encryption")
+	}
+	if s, found := Status("sessions", "v1"); !found || s != "inactive" {
+		t.Errorf("Status(v1) = %q found=%v, want inactive", s, found)
+	}
+	if Usable("sessions", "v9") || Usable("nosuch", "v2") {
+		t.Error("an unknown version or domain was usable")
+	}
+}
