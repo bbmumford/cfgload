@@ -50,9 +50,7 @@ func TestValidateReachesEveryDurationField(t *testing.T) {
 }
 
 func TestValidateDelegatesToTransports(t *testing.T) {
-	n := Networking{Transports: Transports{
-		Partitions: []PartitionTransport{{Partition: "p", NetworkKeys: nil}},
-	}}
+	n := Networking{Partitions: []PartitionTransport{{Partition: "p", NetworkKeys: nil}}}
 	if err := n.Validate(); !errors.Is(err, ErrNoKeys) {
 		t.Fatalf("Validate error = %v, want the transport check to run too", err)
 	}

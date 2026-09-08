@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-func valid() Transports {
-	return Transports{
-		FallbackKeys: []string{"shared-1"},
+func valid() Networking {
+	return Networking{
+		NetworkKeys: []string{"shared-1"},
 		Partitions: []PartitionTransport{
 			{Partition: "p1", NetworkKeys: []string{"p1-new", "p1-old"}},
 			{Partition: "p2", NetworkKeys: []string{"p2-key"}, Dedicated: true, UDPPort: 9101},
@@ -110,21 +110,21 @@ func TestSendKeyRefusesRatherThanReturningAZeroKey(t *testing.T) {
 	if _, ok := valid().SendKey("not-configured"); ok {
 		t.Fatal("SendKey succeeded for an unlisted partition; a caller would transmit under a zero key")
 	}
-	empty := Transports{Partitions: []PartitionTransport{{Partition: "p", NetworkKeys: []string{""}}}}
+	empty := Networking{Partitions: []PartitionTransport{{Partition: "p", NetworkKeys: []string{""}}}}
 	if _, ok := empty.SendKey("p"); ok {
 		t.Fatal("SendKey returned an empty key as usable")
 	}
 }
 
 func TestZeroValueIsUndividedAndConfiguresNobody(t *testing.T) {
-	var z Transports
+	var z Networking
 	if z.Partitioned() {
-		t.Fatal("zero Transports reported as partitioned")
+		t.Fatal("zero Networking reported as partitioned")
 	}
 	if _, ok := z.KeysFor("anything"); ok {
-		t.Fatal("zero Transports resolved a partition")
+		t.Fatal("zero Networking resolved a partition")
 	}
 	if err := z.Validate(); err != nil {
-		t.Fatalf("zero Transports failed validation: %v — an undivided mesh is a legitimate config", err)
+		t.Fatalf("zero Networking failed validation: %v — an undivided mesh is a legitimate config", err)
 	}
 }

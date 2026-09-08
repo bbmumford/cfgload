@@ -30,8 +30,13 @@ type Networking struct {
 	HeartbeatInterval string `json:"heartbeatInterval" yaml:"heartbeatInterval"`
 	DebugLog          bool   `json:"debugLog" yaml:"debugLog"`
 
-	// Transports carries the partition-keyed isolation and the fallback keys.
-	Transports Transports `json:"transports" yaml:"transports"`
+	// NetworkKeys carry traffic belonging to no partition — discovery, anchor and
+	// STUN — and are the whole key set when Partitions is empty. They are NOT a
+	// default for an unlisted partition; see KeysFor.
+	NetworkKeys []string `json:"networkKeys" yaml:"networkKeys" env:"MESH_NETWORK_KEYS"`
+
+	// Partitions are the per-partition transports. Empty means undivided.
+	Partitions []PartitionTransport `json:"partitions,omitempty" yaml:"partitions,omitempty"`
 
 	Anchor         Anchor         `json:"anchor" yaml:"anchor"`
 	VL1            VL1            `json:"vl1" yaml:"vl1"`
@@ -225,5 +230,5 @@ func (n Networking) Validate() error {
 			return fmt.Errorf("%w: %s = %q", ErrBadDuration, f.name, f.val)
 		}
 	}
-	return n.Transports.Validate()
+	return n.validateTransports()
 }

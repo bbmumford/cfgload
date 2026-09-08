@@ -39,19 +39,6 @@ type PartitionTransport struct {
 	UDPPort int `json:"udpPort,omitempty" yaml:"udpPort,omitempty"`
 }
 
-// Transports is the whole mesh transport configuration.
-type Transports struct {
-	// FallbackKeys carry traffic that belongs to no partition — discovery, anchor
-	// and STUN — and serve as the single-partition key set when Partitions is empty.
-	//
-	// They are NOT a default for an unlisted partition. See KeysFor.
-	FallbackKeys []string `json:"fallbackKeys" yaml:"fallbackKeys"`
-
-	// Partitions are the per-partition transports. Empty means undivided: every peer
-	// uses FallbackKeys.
-	Partitions []PartitionTransport `json:"partitions,omitempty" yaml:"partitions,omitempty"`
-}
-
 // Validation errors. They are distinguishable because a caller loading config at
 // boot usually wants to report which kind of mistake was made, not just that one was.
 var (
@@ -71,7 +58,7 @@ var (
 // transports unauthenticated, a dedicated transport with no port quietly rejoins the
 // shared one, and two dedicated partitions on one port are not isolated at all
 // despite the config asserting they are.
-func (t Transports) Validate() error {
+func (t Networking) validateTransports() error {
 	seen := make(map[string]struct{}, len(t.Partitions))
 	ports := make(map[int]string, len(t.Partitions))
 	for i, p := range t.Partitions {
@@ -108,14 +95,14 @@ func (t Transports) Validate() error {
 // KeysFor returns the keys configured for a partition, and whether it is configured
 // at all.
 //
-// It does NOT fall back to FallbackKeys for an unlisted partition, and that refusal
+// It does NOT fall back to NetworkKeys for an unlisted partition, and that refusal
 // is the isolation boundary: handing the shared keys to a partition nobody configured
 // would admit it to the mesh on the same material every unpartitioned peer holds,
 // which is precisely the isolation the per-partition keys exist to create. A caller
-// that genuinely wants the undivided mesh reads FallbackKeys directly and says so.
+// that genuinely wants the undivided mesh reads NetworkKeys directly and says so.
 //
 // The zero Transports returns (nil, false) for every partition.
-func (t Transports) KeysFor(partition string) ([]string, bool) {
+func (t Networking) KeysFor(partition string) ([]string, bool) {
 	if partition == "" {
 		return nil, false
 	}
@@ -128,13 +115,13 @@ func (t Transports) KeysFor(partition string) ([]string, bool) {
 }
 
 // Partitioned reports whether any per-partition transport is configured. When false
-// the mesh is undivided and FallbackKeys carries everything.
-func (t Transports) Partitioned() bool { return len(t.Partitions) > 0 }
+// the mesh is undivided and NetworkKeys carries everything.
+func (t Networking) Partitioned() bool { return len(t.Partitions) > 0 }
 
 // SendKey returns the key a partition signs outbound traffic with — the first of its
 // rolling set. Absent partition, or a partition with no keys, yields "" and false so
 // a caller cannot transmit under a zero key believing it configured one.
-func (t Transports) SendKey(partition string) (string, bool) {
+func (t Networking) SendKey(partition string) (string, bool) {
 	keys, ok := t.KeysFor(partition)
 	if !ok || len(keys) == 0 || keys[0] == "" {
 		return "", false
