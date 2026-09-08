@@ -90,10 +90,16 @@ type LAD struct {
 
 // MeshDB configures the replicated database.
 type MeshDB struct {
-	Enabled      bool        `json:"enabled" yaml:"enabled"`
-	Turso        Turso       `json:"turso" yaml:"turso"`
-	Groups       []Group     `json:"groups" yaml:"groups"`
-	PartitionDB  PartitionDB `json:"partitionDB" yaml:"partitionDB"`
+	Enabled bool    `json:"enabled" yaml:"enabled"`
+	Turso   Turso   `json:"turso" yaml:"turso"`
+	Groups  []Group `json:"groups" yaml:"groups"`
+	// The wire key stays "tenantDB" while the Go name goes neutral. Deployed mesh
+	// configs are SIGNED (Ed25519 over the canonical marshal), so renaming the key
+	// invalidates every signature and a node then refuses to load rather than
+	// mis-parsing. The key migrates when those configs are next regenerated and
+	// re-signed; the identity level is already gone from the type, which is what
+	// the axis work needed.
+	PartitionDB  PartitionDB `json:"tenantDB" yaml:"tenantDB"`
 	SyncInterval string      `json:"syncInterval" yaml:"syncInterval"`
 }
 
