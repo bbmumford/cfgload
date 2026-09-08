@@ -121,7 +121,12 @@ type PartitionDB struct {
 	// AuthToken reaches this group only. It is separate from the control group's
 	// token because a group that holds per-partition data should not be readable
 	// with the credential that administers the platform account.
-	AuthToken string `json:"authToken" yaml:"authToken" env:"TURSO_PARTITION_AUTH_TOKEN"`
+	//
+	// The env name is what deployments actually set today. Renaming the VARIABLE is
+	// a deployment change, not a code one, so this tag tracks reality rather than
+	// naming a variable nobody exports — a tag that names the wrong one sends the
+	// next reader to set a secret that is never read.
+	AuthToken string `json:"authToken" yaml:"authToken" env:"TURSO_TENANT_AUTH_TOKEN"`
 }
 
 // Health configures liveness checking.
