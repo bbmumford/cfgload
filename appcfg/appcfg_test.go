@@ -1,6 +1,7 @@
 package appcfg
 
 import (
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -65,16 +66,28 @@ func TestDeployedKeysStillParse(t *testing.T) {
 	}
 }
 
-// The scope is opaque HERE, but its KEY is the deployed one. Renaming the Go
-// field must not rename the contract: a document saying tenantID has to keep
-// landing in the field the application reads.
-func TestOpaqueScopeKeepsTheDeployedKey(t *testing.T) {
+// No field on this config may carry a partition. A partition is a property of
+// the caller a request proved, so a value read from a file is a value no caller
+// authenticated — an application taking one from here would be granting
+// authority on the strength of a deployment setting.
+//
+// The deployed document above still carries a tenantID key, and must keep
+// parsing: this decoder ignores keys it has no field for, so an environment that
+// has one written down is not broken by the field's absence. What this asserts
+// is the other half — that the value goes nowhere. It marshals the parsed config
+// and looks for the value anywhere in the result, so a field re-added under any
+// name, in any section, fails here rather than at the call site that reads it.
+func TestNoFieldCarriesAPartition(t *testing.T) {
 	var c Config
 	if err := yaml.Unmarshal([]byte(deployed), &c); err != nil {
+		t.Fatalf("a document carrying the deployed tenantID key must still parse: %v", err)
+	}
+	out, err := yaml.Marshal(c)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if c.App.Partition != "hstles" {
-		t.Errorf("Partition = %q, want the value under the deployed tenantID key", c.App.Partition)
+	if strings.Contains(string(out), "hstles") {
+		t.Errorf("the tenantID value reached a config field:\n%s", out)
 	}
 }
 

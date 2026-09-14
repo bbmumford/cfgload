@@ -36,14 +36,10 @@ type AppSettings struct {
 	// rather than lowering a threshold.
 	DebugLog bool `yaml:"debugLog" json:"debugLog"`
 
-	// Partition is the opaque scope this deployment operates under. This package
-	// assigns it no meaning: it is a string to carry, compare and hand to
-	// whatever does interpret it.
-	//
-	// The YAML key stays "tenantID" because that is what deployed documents
-	// already say, and a config key is a wire contract with every environment
-	// that has one written down.
-	Partition string `yaml:"tenantID" json:"tenantID"`
+	// (No partition here. A deployment does not have one: a request's partition is
+	// established per-request from the credential it proves. A config-carried
+	// partition could only ever name the deployment, which is a different thing
+	// wearing the same word.)
 
 	// AllowedCORSDomains each admit the exact host and its subdomains.
 	AllowedCORSDomains []string `yaml:"allowedCORSDomains" json:"allowedCORSDomains"`
