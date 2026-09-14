@@ -6,6 +6,7 @@ package encseal
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -17,11 +18,18 @@ import (
 // not hold.
 var ErrWrapped = errors.New("encseal: key material is wrapped and no Unwrapper is configured")
 
-// Unwrapper turns KEK-wrapped material into the raw key. An application whose
+// Unwrapper turns KEK-wrapped ciphertext into the raw key. An application whose
 // enccfg carries wrapped keys supplies one; without it wrapped material is
 // refused rather than used.
+//
+// wrapped is the DECODED ciphertext, not the stored string: enccfg records
+// wrapped material base64-encoded and EnccfgProvider decodes before calling, so
+// an implementation receives bytes and never has to know how they were stored. A
+// key-management service is handed ciphertext; the encoding is this package's
+// business, and an implementation that had to decode would be coupled to a
+// storage detail it does not own.
 type Unwrapper interface {
-	Unwrap(ctx context.Context, wrapped string) ([]byte, error)
+	Unwrap(ctx context.Context, wrapped []byte) ([]byte, error)
 }
 
 // EnccfgProvider answers from the enccfg registry, for applications whose key
@@ -56,7 +64,15 @@ func (p EnccfgProvider) Key(ctx context.Context, domain, version string) ([]byte
 	if p.Unwrapper == nil {
 		return nil, false, fmt.Errorf("%w: %s/%s", ErrWrapped, domain, version)
 	}
-	raw, err := p.Unwrapper.Unwrap(ctx, material)
+	// enccfg stores wrapped material base64-encoded; the Unwrapper is handed
+	// ciphertext. Decoding here keeps that storage detail out of every
+	// implementation, which would otherwise each have to know it.
+	ciphertext, err := base64.StdEncoding.DecodeString(material)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: wrapped material for %s/%s is not base64: %v",
+			ErrWrapped, domain, version, err)
+	}
+	raw, err := p.Unwrapper.Unwrap(ctx, ciphertext)
 	if err != nil {
 		return nil, false, err
 	}
