@@ -6,11 +6,15 @@
 // Package appcfg is the settings template an HTTP application loads at boot:
 // what it is called, how it logs, how it serves, and whether it is gated.
 //
-// It holds NO identity level. The one scope it carries is an opaque Partition
-// string this package never interprets — no notion of owner, customer, org or
-// tenant attaches to it here. What the value MEANS is the consuming
-// application's to decide, which is what lets one template serve applications
-// that disagree about how their world is divided.
+// It carries no scope at all — not an identity level, and not a partition
+// either. A request's partition is established per request from the credential
+// it proves, so a config-carried one could only name the deployment, which is a
+// different thing wearing the same word. AppSettings says the same at the point
+// where such a field would otherwise sit.
+//
+// A document that still sets an old scope key is not rejected: unmarshalling
+// ignores a key no field claims, so the value is read by nothing. That is why
+// such a key can be left in place — it is inert, not pending.
 package appcfg
 
 // Config is the whole template. Every section is optional in YAML; a missing
