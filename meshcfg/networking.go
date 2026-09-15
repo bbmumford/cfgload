@@ -93,12 +93,13 @@ type MeshDB struct {
 	Enabled bool    `json:"enabled" yaml:"enabled"`
 	Turso   Turso   `json:"turso" yaml:"turso"`
 	Groups  []Group `json:"groups" yaml:"groups"`
-	// The served document is signed, so it has to be regenerated and re-signed
-	// with this key rather than after it: verification reads the document's own
-	// keys, so an older document still verifies and then supplies nothing here,
-	// leaving the group and token empty. That is silent — the signature is fine
-	// and the field is simply absent — so the two move together.
-	PartitionDB  PartitionDB `json:"partitionDB" yaml:"partitionDB"`
+	// The wire key stays "tenantDB" while the Go name goes neutral. Deployed mesh
+	// configs are SIGNED (Ed25519 over the canonical marshal), so renaming the key
+	// invalidates every signature and a node then refuses to load rather than
+	// mis-parsing. The key migrates when those configs are next regenerated and
+	// re-signed; the identity level is already gone from the type, which is what
+	// the axis work needed.
+	PartitionDB  PartitionDB `json:"tenantDB" yaml:"tenantDB"`
 	SyncInterval string      `json:"syncInterval" yaml:"syncInterval"`
 }
 
