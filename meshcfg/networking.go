@@ -93,12 +93,20 @@ type MeshDB struct {
 	Enabled bool    `json:"enabled" yaml:"enabled"`
 	Turso   Turso   `json:"turso" yaml:"turso"`
 	Groups  []Group `json:"groups" yaml:"groups"`
-	// The wire key stays "tenantDB" while the Go name goes neutral. Deployed mesh
-	// configs are SIGNED (Ed25519 over the canonical marshal), so renaming the key
-	// invalidates every signature and a node then refuses to load rather than
-	// mis-parsing. The key migrates when those configs are next regenerated and
-	// re-signed; the identity level is already gone from the type, which is what
-	// the axis work needed.
+	// The wire key still reads "tenantDB" while the Go name is neutral, and the
+	// two have to move in one change rather than one at a time.
+	//
+	// Not because a mismatch is loud — it is the opposite. Verification reads the
+	// served document's own keys (unmarshal, drop the signature, marshal that
+	// back, check it), so the struct tag takes no part in it: a document written
+	// with the other spelling still verifies, supplies nothing here, and leaves
+	// the group and token empty with no error. The pool then has no group to
+	// provision into, and only the auto-provisioning path refuses it.
+	//
+	// The document is signed and held in the tree, so moving the key means
+	// editing it and re-signing with the deployment's keypair in the same change.
+	// The partition-keys configs made this move already; this one waits on
+	// whoever holds that key.
 	PartitionDB  PartitionDB `json:"tenantDB" yaml:"tenantDB"`
 	SyncInterval string      `json:"syncInterval" yaml:"syncInterval"`
 }
