@@ -103,3 +103,44 @@ func TestAbsentSectionsAreZeroNotAnError(t *testing.T) {
 		t.Errorf("absent maintenance section did not zero: %+v", c.Maintenance)
 	}
 }
+
+// TestLoginURLIsReadFromTheDocumentAndNeverDefaulted pins both halves of the one
+// property that makes this field safe to be a redirect target.
+//
+// It has to ARRIVE from the signed document, because a login URL the process
+// inherits from its environment is chosen by whoever controls the environment,
+// and it decides where this application's people type their password.
+//
+// And an absent one has to stay EMPTY. A defaulted login base sends a
+// deployment's visitors to somebody else's sign-in page — silently, because a
+// plausible default is indistinguishable from a configured one at the redirect.
+// Empty is what lets the endpoint refuse instead.
+func TestLoginURLIsReadFromTheDocumentAndNeverDefaulted(t *testing.T) {
+	withLogin := strings.Replace(deployed,
+		"security:\n  cookieName: session",
+		"security:\n  cookieName: session\n  loginURL: https://login.example/", 1)
+
+	var got Config
+	if err := yaml.Unmarshal([]byte(withLogin), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Security.LoginURL != "https://login.example/" {
+		t.Errorf("loginURL read as %q; a key the struct does not read leaves the field zero and the "+
+			"endpoint refuses to build a redirect it was configured for", got.Security.LoginURL)
+	}
+	if got.Security.CookieName != "session" {
+		t.Errorf("cookieName became %q; the new field displaced its neighbour", got.Security.CookieName)
+	}
+
+	// The deployed document above carries no loginURL, which is every config
+	// written before this field existed.
+	var absent Config
+	if err := yaml.Unmarshal([]byte(deployed), &absent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if absent.Security.LoginURL != "" {
+		t.Errorf("an omitted loginURL became %q. Nothing here may supply one: the endpoint's refusal "+
+			"of an empty value is what turns an omitted field into a boot failure rather than a "+
+			"redirect to somewhere nobody chose", absent.Security.LoginURL)
+	}
+}

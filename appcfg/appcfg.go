@@ -54,8 +54,33 @@ type UISettings struct {
 	StaticCacheMaxAge    string `yaml:"staticCacheMaxAge" json:"staticCacheMaxAge"`
 }
 
+// SecuritySettings carries the per-application values that decide how a caller
+// proves who they are, and where they are sent when they cannot. Both belong to
+// the APPLICATION rather than to any one of its endpoints: every endpoint of an
+// app reads the same session cookie and sends an unidentified visitor to the same
+// place, and the two move together when that place moves.
 type SecuritySettings struct {
 	CookieName string `yaml:"cookieName" json:"cookieName"`
+
+	// LoginURL is where this application's people sign in. An endpoint that
+	// serves a page to a signed-in caller sends an unidentified one here, with
+	// enough in the query to come back.
+	//
+	// IT IS CONFIG AND NOT AN ENVIRONMENT VALUE BECAUSE IT IS A REDIRECT TARGET.
+	// Whoever can set it chooses where this application's visitors type their
+	// password, so it belongs in the document a deployment SIGNS rather than in a
+	// variable the process inherits.
+	//
+	// It is also a VALUE rather than something resolved. The arrangement this
+	// replaces looked a destination's host up in an endpoint registry to find its
+	// login endpoint, because one registry served many applications; an
+	// application that knows its own login surface needs no registry to be told.
+	//
+	// EMPTY IS NOT A DEFAULT, AND NOTHING HERE SUPPLIES ONE. A defaulted login
+	// base sends this deployment's visitors to somebody else's sign-in page. An
+	// endpoint that needs it refuses to build its redirect without it, which turns
+	// an omitted field into a boot failure rather than a wrong destination.
+	LoginURL string `yaml:"loginURL" json:"loginURL"`
 }
 
 // MeshSettings gates the bootstrap endpoints. Only nodes that others bootstrap
