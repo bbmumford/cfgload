@@ -112,18 +112,51 @@ type MeshDB struct {
 }
 
 // Turso is the database platform account this deployment provisions under.
+//
+// APIToken is an operator credential: it creates and deletes databases anywhere
+// in the organisation. Only the partition-database provisioner reads it. The
+// replicated-database manager never does — it opens every shared database from
+// the per-database url and token in Group.Databases, so a host needs no
+// organisation token to boot.
 type Turso struct {
 	APIToken string `json:"apiToken" yaml:"apiToken" env:"TURSO_API_TOKEN"`
 	OrgName  string `json:"orgName" yaml:"orgName"`
 }
 
 // Group is one database group and the credentials that reach it.
+//
+// A group is either shared (the default: each database has a primary in Turso
+// and this process keeps an encrypted replica of it) or PureLocal (each
+// database is a file only this process writes). Validate describes what each
+// kind requires.
 type Group struct {
-	GroupName     string   `json:"groupName" yaml:"groupName"`
-	AuthToken     string   `json:"authToken" yaml:"authToken" env:"TURSO_AUTH_TOKEN"`
-	DBNames       []string `json:"dbNames" yaml:"dbNames"`
-	EncryptionKey string   `json:"encryptionKey" yaml:"encryptionKey" env:"MESHDB_ENCRYPTION_KEY"`
-	PureLocal     bool     `json:"pureLocal" yaml:"pureLocal"`
+	GroupName string `json:"groupName" yaml:"groupName"`
+	// AuthToken is the token a shared database uses when its Databases entry
+	// carries none of its own.
+	AuthToken string `json:"authToken" yaml:"authToken" env:"TURSO_AUTH_TOKEN"`
+	// DBNames lists the group's databases. In a shared group every name here
+	// must also appear in Databases, which carries its url.
+	DBNames []string `json:"dbNames" yaml:"dbNames"`
+	// EncryptionKey is base64 of exactly 32 random bytes. Every file the group
+	// keeps on disk is encrypted under it, and Raft members of the group prove
+	// they hold it, so every endpoint holding the group carries the same value.
+	EncryptionKey string `json:"encryptionKey" yaml:"encryptionKey" env:"MESHDB_ENCRYPTION_KEY"`
+	PureLocal     bool   `json:"pureLocal" yaml:"pureLocal"`
+
+	// PriorEncryptionKey is the group's previous key while a rotation is in
+	// progress. It is accepted in the Raft member proof only; files are never
+	// opened under it.
+	PriorEncryptionKey string `json:"priorEncryptionKey,omitempty" yaml:"priorEncryptionKey,omitempty"`
+	// Databases carries each shared database's primary url and, optionally, a
+	// token scoped to that database alone.
+	Databases []Database `json:"databases,omitempty" yaml:"databases,omitempty"`
+	// SyncInterval is how often each replica in the group pulls from its
+	// primary. Empty means the manager's default.
+	SyncInterval string `json:"syncInterval,omitempty" yaml:"syncInterval,omitempty"`
+	// Raft declares the singleton jobs that run against the group's one shared
+	// database and which services vote on who runs them. Absent means the
+	// group runs no singleton jobs.
+	Raft *Raft `json:"raft,omitempty" yaml:"raft,omitempty"`
 }
 
 // PartitionDB configures databases provisioned per PARTITION, using the opaque
@@ -248,6 +281,9 @@ func (n Networking) Validate() error {
 		if _, err := time.ParseDuration(f.val); err != nil {
 			return fmt.Errorf("%w: %s = %q", ErrBadDuration, f.name, f.val)
 		}
+	}
+	if err := n.MeshDB.Validate(); err != nil {
+		return err
 	}
 	return n.validateTransports()
 }
