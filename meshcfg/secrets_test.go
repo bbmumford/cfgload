@@ -25,8 +25,9 @@ func (e *fakeEnv) lookup(name string) (string, bool) {
 	return v, ok
 }
 
-// hostConfig declares api.orbtr.ai's two groups by name alone, as a template
-// that carries no secret does.
+// hostConfig declares api.orbtr.ai's two shared groups by name alone, as a
+// template that carries no secret does, and a pureLocal group, whose token
+// variable FillSecrets must not read.
 func hostConfig() Config {
 	var c Config
 	c.Networking.MeshDB = MeshDB{Enabled: true, Groups: []Group{
@@ -104,7 +105,7 @@ func TestFillSecretsTakesEmptySettingsFromTheEnvironment(t *testing.T) {
 		{"tenantDB authToken", m.PartitionDB.AuthToken, "partition-token"},
 	} {
 		if f.got != f.want {
-			t.Errorf("%s was not filled from its variable", f.name)
+			t.Errorf("%s holds the wrong value after FillSecrets", f.name)
 		}
 	}
 	if slices.Contains(env.read, "MESHDB_LAD_AUTH_TOKEN") {
