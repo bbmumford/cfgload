@@ -7,6 +7,7 @@ package meshcfg
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 )
 
@@ -46,6 +47,13 @@ type Networking struct {
 	CircuitBreaker CircuitBreaker `json:"circuitBreaker" yaml:"circuitBreaker"`
 	Audit          Audit          `json:"audit" yaml:"audit"`
 	DataDir        string         `json:"dataDir" yaml:"dataDir"`
+	// VolumeDir is the absolute root of the persistent volume, empty on a
+	// process that has none. It is the value for loom's
+	// DatabasesConfig.VolumeDir, which tursoraft uses to refuse a voter whose
+	// MeshDB state does not sit under it: a voter that loses its Raft state on
+	// restart rejoins as a stranger. Validate refuses a relative path at load
+	// because loom's node Config.Validate refuses one at node start.
+	VolumeDir string `json:"volumeDir" yaml:"volumeDir"`
 }
 
 // Anchor configures bootstrapping from signed directory snapshots.
@@ -74,13 +82,18 @@ type VL1 struct {
 // LAD configures the ledger-backed directory.
 type LAD struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
-	// Storage selects where discovery records live: "local" (embedded, survives
-	// restart), "memory" (ephemeral), or "mesh" (replicated, needs RaftBindAddr).
-	Storage            string `json:"storage" yaml:"storage"`
-	SyncInterval       string `json:"syncInterval" yaml:"syncInterval"`
-	LocalDir           string `json:"localDir" yaml:"localDir"`
-	BootstrapPeers     string `json:"bootstrapPeers" yaml:"bootstrapPeers"`
-	RetentionDays      int    `json:"retentionDays" yaml:"retentionDays"`
+	// Storage is read by nothing: the endpoint spine (library/endpoint Run)
+	// chooses loom's LAD storage itself. loom accepts "local", an encrypted
+	// file under LocalDir that survives restart, or "memory".
+	Storage        string `json:"storage" yaml:"storage"`
+	SyncInterval   string `json:"syncInterval" yaml:"syncInterval"`
+	LocalDir       string `json:"localDir" yaml:"localDir"`
+	BootstrapPeers string `json:"bootstrapPeers" yaml:"bootstrapPeers"`
+	RetentionDays  int    `json:"retentionDays" yaml:"retentionDays"`
+	// RaftBindAddr reaches nothing that acts on it: library/endpoint and
+	// node.orbtr.io copy it into loom's DatabasesConfig.RaftBindAddr, which
+	// loom ignores because Raft runs over the endpoint mesh.
+	// TODO: delete it and RaftAddr once neither copies it.
 	RaftBindAddr       string `json:"raftBindAddr" yaml:"raftBindAddr"`
 	CompactionInterval string `json:"compactionInterval" yaml:"compactionInterval"`
 	// EnableBloomFilters is a pointer so "unset" is distinguishable from an explicit
@@ -117,7 +130,9 @@ type MeshDB struct {
 // in the organisation. Only the partition-database provisioner reads it. The
 // replicated-database manager never does — it opens every shared database from
 // the per-database url and token in Group.Databases, so a host needs no
-// organisation token to boot.
+// organisation token to boot. When the document leaves it empty, FillSecrets
+// takes it from the variable its env tag names (EnvTursoAPIToken); nothing
+// requires it.
 type Turso struct {
 	APIToken string `json:"apiToken" yaml:"apiToken" env:"TURSO_API_TOKEN"`
 	OrgName  string `json:"orgName" yaml:"orgName"`
@@ -127,25 +142,30 @@ type Turso struct {
 //
 // A group is either shared (the default: each database has a primary in Turso
 // and this process keeps an encrypted replica of it) or PureLocal (each
-// database is a file only this process writes). Validate describes what each
-// kind requires.
+// database is a file only this process writes). ValidateResolved describes
+// what each kind requires.
+//
+// The key, the prior key and the token carry no env tag: a tag names one
+// variable, and every group needs its own. FillSecrets reads the per-group
+// variable EnvName derives when the document leaves the field empty.
 type Group struct {
 	GroupName string `json:"groupName" yaml:"groupName"`
 	// AuthToken is the token a shared database uses when its Databases entry
-	// carries none of its own.
-	AuthToken string `json:"authToken" yaml:"authToken" env:"TURSO_AUTH_TOKEN"`
+	// carries none of its own. Its variable is MESHDB_<G>_AUTH_TOKEN.
+	AuthToken string `json:"authToken" yaml:"authToken"`
 	// DBNames lists the group's databases. In a shared group every name here
 	// must also appear in Databases, which carries its url.
 	DBNames []string `json:"dbNames" yaml:"dbNames"`
 	// EncryptionKey is base64 of exactly 32 random bytes. Every file the group
 	// keeps on disk is encrypted under it, and Raft members of the group prove
 	// they hold it, so every endpoint holding the group carries the same value.
-	EncryptionKey string `json:"encryptionKey" yaml:"encryptionKey" env:"MESHDB_ENCRYPTION_KEY"`
+	// Its variable is MESHDB_<G>_ENCRYPTION_KEY.
+	EncryptionKey string `json:"encryptionKey" yaml:"encryptionKey"`
 	PureLocal     bool   `json:"pureLocal" yaml:"pureLocal"`
 
 	// PriorEncryptionKey is the group's previous key while a rotation is in
 	// progress. It is accepted in the Raft member proof only; files are never
-	// opened under it.
+	// opened under it. Its variable is MESHDB_<G>_PRIOR_ENCRYPTION_KEY.
 	PriorEncryptionKey string `json:"priorEncryptionKey,omitempty" yaml:"priorEncryptionKey,omitempty"`
 	// Databases carries each shared database's primary url and, optionally, a
 	// token scoped to that database alone.
@@ -169,10 +189,10 @@ type PartitionDB struct {
 	// token because a group that holds per-partition data should not be readable
 	// with the credential that administers the platform account.
 	//
-	// The env name is what deployments actually set today. Renaming the VARIABLE is
-	// a deployment change, not a code one, so this tag tracks reality rather than
-	// naming a variable nobody exports — a tag that names the wrong one sends the
-	// next reader to set a secret that is never read.
+	// When the document leaves it empty, FillSecrets takes it from the variable
+	// the env tag names (EnvPartitionAuthToken), the same variable node.orbtr.io
+	// reads for its partition pool. A tag naming any other variable would send
+	// the next reader to set a secret that is never read.
 	AuthToken string `json:"authToken" yaml:"authToken" env:"TURSO_TENANT_AUTH_TOKEN"`
 }
 
@@ -197,6 +217,9 @@ type Audit struct {
 
 // ErrBadDuration reports a duration field that will not parse.
 var ErrBadDuration = errors.New("meshcfg: unparseable duration")
+
+// ErrRelativePath reports a directory that must be absolute and is not.
+var ErrRelativePath = errors.New("meshcfg: path must be absolute")
 
 // Defaults applied when a duration field is empty.
 const (
@@ -243,9 +266,8 @@ func (l LAD) Compaction() time.Duration {
 // the field is unset — which is why the field is a pointer.
 func (l LAD) BloomFilters() bool { return l.EnableBloomFilters == nil || *l.EnableBloomFilters }
 
-// RaftAddr returns the LAD replication address, deriving it from RaftPort+1 when
-// unset so a mesh-storage deployment that names only one port still binds a second
-// one deterministically rather than colliding with the first.
+// RaftAddr returns LAD.RaftBindAddr, else RaftPort+1, else ":8301". Nothing
+// calls it. TODO: delete it with LAD.RaftBindAddr.
 func (n Networking) RaftAddr() string {
 	if n.LAD.RaftBindAddr != "" {
 		return n.LAD.RaftBindAddr
@@ -256,10 +278,11 @@ func (n Networking) RaftAddr() string {
 	return ":8301"
 }
 
-// Validate reports the first malformed duration, and delegates transport checks to
-// Transports.Validate. It exists because every accessor above falls back silently:
-// without this, "5x" and "5m" behave identically at runtime and the operator never
-// learns which one they wrote.
+// Validate reports the first malformed duration, a relative volumeDir, the first
+// MeshDB shape error (MeshDB.Validate) and the first transport mistake. The
+// duration check exists because every accessor above falls back silently:
+// without it, "5x" and "5m" behave identically at runtime and the operator
+// never learns which one they wrote.
 func (n Networking) Validate() error {
 	for _, f := range []struct {
 		name, val string
@@ -281,6 +304,9 @@ func (n Networking) Validate() error {
 		if _, err := time.ParseDuration(f.val); err != nil {
 			return fmt.Errorf("%w: %s = %q", ErrBadDuration, f.name, f.val)
 		}
+	}
+	if n.VolumeDir != "" && !filepath.IsAbs(n.VolumeDir) {
+		return fmt.Errorf("%w: volumeDir = %q", ErrRelativePath, n.VolumeDir)
 	}
 	if err := n.MeshDB.Validate(); err != nil {
 		return err

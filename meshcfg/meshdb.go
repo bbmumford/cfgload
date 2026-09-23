@@ -13,14 +13,17 @@ import (
 )
 
 // Database is one shared database of a group: where its primary is and the
-// token that reaches it.
+// token that reaches it. An entry with only a Name declares the database and
+// leaves its url and token to the environment (FillSecrets).
 type Database struct {
 	Name string `json:"name" yaml:"name"`
 	// URL is the primary, e.g. libsql://<name>-<org>.<region>.turso.io. It is
-	// carried in the document because the manager opening the replica never
-	// calls the platform API to look it up.
+	// carried in the configuration because the manager opening the replica
+	// never calls the platform API to look it up. Its variable is
+	// MESHDB_<G>_<D>_URL.
 	URL string `json:"url" yaml:"url"`
 	// AuthToken is scoped to this database. Empty means the group's AuthToken.
+	// Its variable is MESHDB_<G>_<D>_AUTH_TOKEN.
 	AuthToken string `json:"authToken,omitempty" yaml:"authToken,omitempty"`
 }
 
@@ -47,6 +50,7 @@ type Raft struct {
 var (
 	ErrBadName          = errors.New("meshcfg: group, database or job name must match ^[a-z0-9][a-z0-9_-]*$")
 	ErrBadEncryptionKey = errors.New("meshcfg: encryptionKey must be base64 of exactly 32 bytes")
+	ErrNoEncryptionKey  = errors.New("meshcfg: group has no encryptionKey")
 	ErrNoDatabaseURL    = errors.New("meshcfg: shared database has no url")
 	ErrNoDatabaseToken  = errors.New("meshcfg: shared database has no auth token")
 	ErrDuplicateName    = errors.New("meshcfg: name declared twice")
@@ -70,14 +74,16 @@ func DecodeEncryptionKey(s string) ([]byte, error) {
 	return key, nil
 }
 
-// Validate reports the first group that the replicated-database manager would
-// refuse at boot. A disabled MeshDB is not checked.
+// Validate reports the first group whose document shape the replicated-database
+// manager would refuse at boot. A disabled MeshDB is not checked.
 //
-// Every group needs a 32-byte key, because encryption at rest has no opt-out.
-// A shared group needs a url and a token for each database, because the
-// manager opens replicas from the document alone. A raft block needs voters, a
-// bootstrap size no larger than the voter count, host services for every job
-// and exactly one shared database to hold its fence rows.
+// cfgload.Load runs it (through Config.Validate) on the signed document, before
+// the environment has supplied any secret, so an empty key, url or token passes
+// here while a key that is present and malformed does not. Names must be safe
+// path elements and unique. A raft block needs voters, a bootstrap size no
+// larger than the voter count, host services for every job and exactly one
+// shared database to hold its fence rows. ValidateResolved is the complete
+// check, run after FillSecrets.
 func (m MeshDB) Validate() error {
 	if !m.Enabled {
 		return nil
@@ -98,10 +104,13 @@ func (m MeshDB) Validate() error {
 	return nil
 }
 
-// Validate reports the first requirement of one group that is not met.
+// Validate reports the first shape requirement of one group that is not met;
+// MeshDB.Validate says which requirements those are.
 func (g Group) Validate() error {
-	if _, err := DecodeEncryptionKey(g.EncryptionKey); err != nil {
-		return fmt.Errorf("group %q: %w", g.GroupName, err)
+	if g.EncryptionKey != "" {
+		if _, err := DecodeEncryptionKey(g.EncryptionKey); err != nil {
+			return fmt.Errorf("group %q: %w", g.GroupName, err)
+		}
 	}
 	if g.PriorEncryptionKey != "" {
 		if _, err := DecodeEncryptionKey(g.PriorEncryptionKey); err != nil {
@@ -124,36 +133,76 @@ func (g Group) Validate() error {
 		}
 		names[n] = true
 	}
-	withURL := map[string]bool{}
+	declared := map[string]bool{}
 	for _, d := range g.Databases {
 		if !nameRE.MatchString(d.Name) {
 			return fmt.Errorf("%w: group %q database %q", ErrBadName, g.GroupName, d.Name)
 		}
-		if withURL[d.Name] {
+		if declared[d.Name] {
 			return fmt.Errorf("%w: group %q database %q", ErrDuplicateName, g.GroupName, d.Name)
 		}
-		withURL[d.Name] = true
+		declared[d.Name] = true
 		names[d.Name] = true
-		if g.PureLocal {
-			continue
-		}
-		if d.URL == "" {
-			return fmt.Errorf("%w: group %q database %q", ErrNoDatabaseURL, g.GroupName, d.Name)
-		}
-		if d.AuthToken == "" && g.AuthToken == "" {
-			return fmt.Errorf("%w: group %q database %q", ErrNoDatabaseToken, g.GroupName, d.Name)
-		}
-	}
-	if !g.PureLocal {
-		for n := range names {
-			if !withURL[n] {
-				return fmt.Errorf("%w: group %q database %q", ErrNoDatabaseURL, g.GroupName, n)
-			}
-		}
 	}
 	if g.Raft != nil {
 		if err := g.Raft.validate(g, len(names)); err != nil {
 			return fmt.Errorf("group %q: %w", g.GroupName, err)
+		}
+	}
+	return nil
+}
+
+// ValidateResolved reports the first thing the replicated-database manager
+// would still refuse once FillSecrets has run: everything Validate checks, a
+// 32-byte key for every group, and for every database of a shared group a
+// Databases entry with a url and a token (its own or the group's). A disabled
+// MeshDB is not checked.
+//
+// It is separate from Validate because cfgload.Load runs Validate on the signed
+// document, which never carries these values; a caller that fills them from
+// its environment runs this before handing the groups to loom. Each error names
+// the document field and the variable that would supply it, never a value.
+func (m MeshDB) ValidateResolved() error {
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	if !m.Enabled {
+		return nil
+	}
+	for _, g := range m.Groups {
+		if err := g.validateResolved(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g Group) validateResolved() error {
+	name := g.GroupName
+	if g.EncryptionKey == "" {
+		return fmt.Errorf("%w: set %s or %s", ErrNoEncryptionKey,
+			settingPath(name, "", FieldEncryptionKey), EnvName(name, "", FieldEncryptionKey))
+	}
+	if g.PureLocal {
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, d := range g.Databases {
+		declared[d.Name] = true
+		if d.URL == "" {
+			return fmt.Errorf("%w: set %s or %s", ErrNoDatabaseURL,
+				settingPath(name, d.Name, FieldURL), EnvName(name, d.Name, FieldURL))
+		}
+		if d.AuthToken == "" && g.AuthToken == "" {
+			return fmt.Errorf("%w: set %s or %s, or the group's %s or %s", ErrNoDatabaseToken,
+				settingPath(name, d.Name, FieldAuthToken), EnvName(name, d.Name, FieldAuthToken),
+				settingPath(name, "", FieldAuthToken), EnvName(name, "", FieldAuthToken))
+		}
+	}
+	for _, n := range g.DBNames {
+		if !declared[n] {
+			return fmt.Errorf("%w: networking.meshdb.groups[%s].dbNames lists %q, which has no databases entry to carry its url",
+				ErrNoDatabaseURL, name, n)
 		}
 	}
 	return nil
