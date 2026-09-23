@@ -95,15 +95,48 @@ func TestTheRaftBlockUnmarshalsFromYAMLAndJSON(t *testing.T) {
 	}
 }
 
-func TestAGroupWithNoKeyFails(t *testing.T) {
+// cfgload.Load runs Validate on a document that carries no key, so an empty key
+// passes it while a present, malformed one does not.
+func TestValidateAcceptsAnEmptyKeyAndRefusesAMalformedOne(t *testing.T) {
 	g := sharedGroup()
 	g.EncryptionKey = ""
+	if err := enabled(g).Validate(); err != nil {
+		t.Fatalf("empty key: Validate = %v, want nil", err)
+	}
+	g.EncryptionKey = "short"
 	if err := enabled(g).Validate(); !errors.Is(err, ErrBadEncryptionKey) {
-		t.Fatalf("Validate = %v, want ErrBadEncryptionKey", err)
+		t.Fatalf("malformed key: Validate = %v, want ErrBadEncryptionKey", err)
+	}
+}
+
+func TestValidateResolvedRefusesAGroupWithNoKey(t *testing.T) {
+	g := sharedGroup()
+	g.EncryptionKey = ""
+	err := enabled(g).ValidateResolved()
+	if !errors.Is(err, ErrNoEncryptionKey) {
+		t.Fatalf("ValidateResolved = %v, want ErrNoEncryptionKey", err)
+	}
+	for _, want := range []string{"networking.meshdb.groups[control].encryptionKey", "MESHDB_CONTROL_ENCRYPTION_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+	for _, value := range []string{g.Databases[0].AuthToken, g.Databases[0].URL} {
+		if strings.Contains(err.Error(), value) {
+			t.Errorf("error %q carries a configured value", err)
+		}
 	}
 	local := Group{GroupName: "lad", DBNames: []string{"lad"}, PureLocal: true}
-	if err := enabled(local).Validate(); !errors.Is(err, ErrBadEncryptionKey) {
-		t.Fatalf("pureLocal group with no key: Validate = %v, want ErrBadEncryptionKey", err)
+	if err := enabled(local).ValidateResolved(); !errors.Is(err, ErrNoEncryptionKey) {
+		t.Fatalf("pureLocal group with no key: ValidateResolved = %v, want ErrNoEncryptionKey", err)
+	}
+
+	if err := enabled(sharedGroup()).ValidateResolved(); err != nil {
+		t.Fatalf("32-byte key: ValidateResolved = %v, want nil", err)
+	}
+	local.EncryptionKey = testKey
+	if err := enabled(local).ValidateResolved(); err != nil {
+		t.Fatalf("pureLocal group with a 32-byte key: ValidateResolved = %v, want nil", err)
 	}
 }
 
@@ -112,6 +145,9 @@ func TestASixteenByteKeyFails(t *testing.T) {
 	g.EncryptionKey = base64.StdEncoding.EncodeToString(make([]byte, 16))
 	if err := enabled(g).Validate(); !errors.Is(err, ErrBadEncryptionKey) {
 		t.Fatalf("Validate = %v, want ErrBadEncryptionKey", err)
+	}
+	if err := enabled(g).ValidateResolved(); !errors.Is(err, ErrBadEncryptionKey) {
+		t.Fatalf("ValidateResolved = %v, want the shape check to run too", err)
 	}
 	g = sharedGroup()
 	g.PriorEncryptionKey = "not base64!"
@@ -134,25 +170,61 @@ func TestAMalformedGroupSyncIntervalFails(t *testing.T) {
 	}
 }
 
-func TestASharedDatabaseNeedsAURLAndAToken(t *testing.T) {
+// The host templates declare their databases by name alone, so Validate must
+// pass a database with no url or token and one listed only in dbNames.
+func TestValidateLeavesURLsAndTokensToTheEnvironment(t *testing.T) {
 	g := sharedGroup()
-	g.Databases[0].URL = ""
-	if err := enabled(g).Validate(); !errors.Is(err, ErrNoDatabaseURL) {
-		t.Fatalf("no url: Validate = %v, want ErrNoDatabaseURL", err)
+	g.Databases[0].URL, g.Databases[0].AuthToken = "", ""
+	if err := enabled(g).Validate(); err != nil {
+		t.Fatalf("no url or token: Validate = %v, want nil", err)
+	}
+	if err := enabled(g).ValidateResolved(); !errors.Is(err, ErrNoDatabaseURL) {
+		t.Fatalf("no url or token: ValidateResolved = %v, want ErrNoDatabaseURL", err)
 	}
 	g = sharedGroup()
+	g.Raft = nil
 	g.DBNames = append(g.DBNames, "orbtr-sessions")
-	if err := enabled(g).Validate(); !errors.Is(err, ErrNoDatabaseURL) {
-		t.Fatalf("dbNames entry without a databases entry: Validate = %v, want ErrNoDatabaseURL", err)
+	if err := enabled(g).Validate(); err != nil {
+		t.Fatalf("dbNames entry without a databases entry: Validate = %v, want nil", err)
+	}
+	if err := enabled(g).ValidateResolved(); !errors.Is(err, ErrNoDatabaseURL) {
+		t.Fatalf("dbNames entry without a databases entry: ValidateResolved = %v, want ErrNoDatabaseURL", err)
+	}
+}
+
+func TestValidateResolvedNeedsAURLAndAToken(t *testing.T) {
+	g := sharedGroup()
+	g.Databases[0].URL = ""
+	err := enabled(g).ValidateResolved()
+	if !errors.Is(err, ErrNoDatabaseURL) {
+		t.Fatalf("no url: ValidateResolved = %v, want ErrNoDatabaseURL", err)
+	}
+	for _, want := range []string{"networking.meshdb.groups[control].databases[orbtr-control].url", "MESHDB_CONTROL_ORBTR_CONTROL_URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+	g = sharedGroup()
+	g.Raft = nil
+	g.DBNames = append(g.DBNames, "orbtr-sessions")
+	if err := enabled(g).ValidateResolved(); err == nil || !strings.Contains(err.Error(), `"orbtr-sessions", which has no databases entry`) {
+		t.Fatalf("dbNames entry without a databases entry: ValidateResolved = %v, want it named", err)
 	}
 	g = sharedGroup()
 	g.Databases[0].AuthToken = ""
-	if err := enabled(g).Validate(); !errors.Is(err, ErrNoDatabaseToken) {
-		t.Fatalf("no token: Validate = %v, want ErrNoDatabaseToken", err)
+	err = enabled(g).ValidateResolved()
+	if !errors.Is(err, ErrNoDatabaseToken) {
+		t.Fatalf("no token: ValidateResolved = %v, want ErrNoDatabaseToken", err)
 	}
+	for _, want := range []string{"MESHDB_CONTROL_ORBTR_CONTROL_AUTH_TOKEN", "MESHDB_CONTROL_AUTH_TOKEN"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+
 	g.AuthToken = "group-token"
-	if err := enabled(g).Validate(); err != nil {
-		t.Fatalf("group token fallback: Validate = %v, want nil", err)
+	if err := enabled(g).ValidateResolved(); err != nil {
+		t.Fatalf("group token fallback: ValidateResolved = %v, want nil", err)
 	}
 }
 
@@ -195,6 +267,13 @@ func TestADisabledMeshDBIsNotChecked(t *testing.T) {
 	m := MeshDB{Groups: []Group{{GroupName: "control"}}}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("disabled MeshDB: Validate = %v, want nil", err)
+	}
+	if err := m.ValidateResolved(); err != nil {
+		t.Fatalf("disabled MeshDB: ValidateResolved = %v, want nil", err)
+	}
+	m.Enabled = true
+	if err := m.ValidateResolved(); !errors.Is(err, ErrNoEncryptionKey) {
+		t.Fatalf("enabled MeshDB: ValidateResolved = %v, want ErrNoEncryptionKey", err)
 	}
 }
 

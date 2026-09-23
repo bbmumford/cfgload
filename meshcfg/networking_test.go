@@ -8,6 +8,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestValidateCatchesAMalformedDuration(t *testing.T) {
@@ -46,6 +48,31 @@ func TestValidateReachesEveryDurationField(t *testing.T) {
 		if err := tc.n.Validate(); !errors.Is(err, ErrBadDuration) {
 			t.Errorf("%s: Validate error = %v, want ErrBadDuration — an unchecked field is a silent default", tc.name, err)
 		}
+	}
+}
+
+// loom and tursoraft resolve no path against a working directory, so a
+// relative volume root is refused at load.
+func TestVolumeDirMustBeAbsolute(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte("networking:\n  volumeDir: data\n"), &c); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); !errors.Is(err, ErrRelativePath) {
+		t.Fatalf("volumeDir %q: Validate = %v, want ErrRelativePath", c.Networking.VolumeDir, err)
+	}
+	if err := yaml.Unmarshal([]byte("networking:\n  volumeDir: /data\n"), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Networking.VolumeDir != "/data" {
+		t.Fatalf("volumeDir did not unmarshal: %q", c.Networking.VolumeDir)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("volumeDir /data: Validate = %v, want nil", err)
+	}
+	c.Networking.VolumeDir = ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("no volumeDir: Validate = %v, want nil", err)
 	}
 }
 
@@ -106,8 +133,6 @@ func TestRaftAddrPrefersTheExplicitValue(t *testing.T) {
 }
 
 func TestRaftAddrDerivesFromRaftPortPlusOne(t *testing.T) {
-	// Deriving rather than reusing RaftPort is the point: a mesh-storage deployment
-	// naming one port still binds a second deterministically instead of colliding.
 	if got := (Networking{RaftPort: 8300}).RaftAddr(); got != ":8301" {
 		t.Fatalf("RaftAddr = %q, want :8301", got)
 	}
