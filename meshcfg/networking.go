@@ -85,16 +85,11 @@ type LAD struct {
 	// Storage is read by nothing: the endpoint spine (library/endpoint Run)
 	// chooses loom's LAD storage itself. loom accepts "local", an encrypted
 	// file under LocalDir that survives restart, or "memory".
-	Storage        string `json:"storage" yaml:"storage"`
-	SyncInterval   string `json:"syncInterval" yaml:"syncInterval"`
-	LocalDir       string `json:"localDir" yaml:"localDir"`
-	BootstrapPeers string `json:"bootstrapPeers" yaml:"bootstrapPeers"`
-	RetentionDays  int    `json:"retentionDays" yaml:"retentionDays"`
-	// RaftBindAddr reaches nothing that acts on it: library/endpoint and
-	// node.orbtr.io copy it into loom's DatabasesConfig.RaftBindAddr, which
-	// loom ignores because Raft runs over the endpoint mesh.
-	// TODO: delete it and RaftAddr once neither copies it.
-	RaftBindAddr       string `json:"raftBindAddr" yaml:"raftBindAddr"`
+	Storage            string `json:"storage" yaml:"storage"`
+	SyncInterval       string `json:"syncInterval" yaml:"syncInterval"`
+	LocalDir           string `json:"localDir" yaml:"localDir"`
+	BootstrapPeers     string `json:"bootstrapPeers" yaml:"bootstrapPeers"`
+	RetentionDays      int    `json:"retentionDays" yaml:"retentionDays"`
 	CompactionInterval string `json:"compactionInterval" yaml:"compactionInterval"`
 	// EnableBloomFilters is a pointer so "unset" is distinguishable from an explicit
 	// false — the default is ON, and a bool would make omission look like opting out.
@@ -265,18 +260,6 @@ func (l LAD) Compaction() time.Duration {
 // BloomFilters reports whether query bloom filters are on, defaulting to TRUE when
 // the field is unset — which is why the field is a pointer.
 func (l LAD) BloomFilters() bool { return l.EnableBloomFilters == nil || *l.EnableBloomFilters }
-
-// RaftAddr returns LAD.RaftBindAddr, else RaftPort+1, else ":8301". Nothing
-// calls it. TODO: delete it with LAD.RaftBindAddr.
-func (n Networking) RaftAddr() string {
-	if n.LAD.RaftBindAddr != "" {
-		return n.LAD.RaftBindAddr
-	}
-	if n.RaftPort > 0 {
-		return fmt.Sprintf(":%d", n.RaftPort+1)
-	}
-	return ":8301"
-}
 
 // Validate reports the first malformed duration, a relative volumeDir, the first
 // MeshDB shape error (MeshDB.Validate) and the first transport mistake. The

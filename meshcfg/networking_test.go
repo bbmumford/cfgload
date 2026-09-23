@@ -124,19 +124,3 @@ func TestBloomFiltersDefaultOnWhenUnset(t *testing.T) {
 		t.Fatal("an explicit true was ignored")
 	}
 }
-
-func TestRaftAddrPrefersTheExplicitValue(t *testing.T) {
-	n := Networking{RaftPort: 8300, LAD: LAD{RaftBindAddr: ":9999"}}
-	if got := n.RaftAddr(); got != ":9999" {
-		t.Fatalf("RaftAddr = %q, want the explicit :9999", got)
-	}
-}
-
-func TestRaftAddrDerivesFromRaftPortPlusOne(t *testing.T) {
-	if got := (Networking{RaftPort: 8300}).RaftAddr(); got != ":8301" {
-		t.Fatalf("RaftAddr = %q, want :8301", got)
-	}
-	if got := (Networking{}).RaftAddr(); got != ":8301" {
-		t.Fatalf("RaftAddr with no port = %q, want the :8301 fallback", got)
-	}
-}
