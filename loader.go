@@ -3,6 +3,7 @@ package cfgload
 import (
 	"fmt"
 	"log"
+	"reflect"
 	"sync"
 	"time"
 
@@ -159,7 +160,11 @@ func Load(target interface{}, opts LoadOptions) error {
 		if opts.PublicKey == "" {
 			return fmt.Errorf("publicKey is required when verifySignature is enabled")
 		}
-		if err := verify.VerifySignature(data, opts.PublicKey); err != nil {
+		reread, rereadIsJSON, err := verify.Reread(data, opts.PublicKey)
+		if err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+		if err := loadsAsSigned(data, opts.Format, reread, rereadIsJSON, target); err != nil {
 			return fmt.Errorf("signature verification failed: %w", err)
 		}
 	}
@@ -298,4 +303,110 @@ func StopReload(target interface{}) {
 		state.running = false
 	}
 	state.mu.Unlock()
+}
+
+// loadsAsSigned returns an error unless the document fills a target with the
+// value the signature check's own reading of it fills it with. Load calls it
+// after the signature has verified and before it fills the caller's target.
+//
+// verify.Reread checks the signature over the document decoded into a map
+// and marshalled again, and returns that form with the signature field left
+// in. The form keeps every key and value and drops how a value was written,
+// so an unquoted 1.10 is the number 1.1 in it and 0123 is 83. Load fills the
+// target from the document's own bytes, where a text field takes the
+// characters as written. A document can therefore be rewritten, under one
+// signature, into any other spelling of the same number, and a text field
+// then loads a different string. Filling one fresh value of the target's type
+// from each form and comparing them refuses every such document, altered or
+// not, and leaves alone a value that loads the same from both, such as a
+// number written in hexadecimal into a number field. The reread form carries
+// the signature field because targets such as the endpoint spine's own config
+// type declare it, and would otherwise differ on that field alone.
+//
+// Both values start empty, so what the caller's target already holds takes no
+// part in the comparison. A target that is not a pointer, or a document that
+// does not parse, is left for parse.Parse below to refuse.
+func loadsAsSigned(data []byte, format parse.Format, reread []byte, rereadIsJSON bool, target interface{}) error {
+	t := reflect.TypeOf(target)
+	if t == nil || t.Kind() != reflect.Ptr {
+		return nil
+	}
+	fromDocument := reflect.New(t.Elem())
+	if err := parse.Parse(data, fromDocument.Interface(), format); err != nil {
+		return nil
+	}
+	rereadFormat := parse.FormatYAML
+	if rereadIsJSON {
+		rereadFormat = parse.FormatJSON
+	}
+	fromReread := reflect.New(t.Elem())
+	if err := parse.Parse(reread, fromReread.Interface(), rereadFormat); err != nil {
+		return fmt.Errorf("the form of the document its signature was checked over does not load: %w", err)
+	}
+	if reflect.DeepEqual(fromDocument.Interface(), fromReread.Interface()) {
+		return nil
+	}
+	where := firstDifference(fromDocument.Elem(), fromReread.Elem(), "")
+	return fmt.Errorf("the document loads a value its signature does not determine%s: a text value that reads as a number or a date must be written in quotes", where)
+}
+
+// firstDifference names the first place two values of one type differ, as
+// " (at Server.Host: "0123" in the document, "83" in the signed form)", for
+// loadsAsSigned's error. It returns "" when it finds no place it can name.
+func firstDifference(a, b reflect.Value, path string) string {
+	if !a.IsValid() || !b.IsValid() || a.Type() != b.Type() {
+		return ""
+	}
+	switch a.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if a.IsNil() || b.IsNil() {
+			if a.IsNil() != b.IsNil() {
+				return fmt.Sprintf(" (at %s: set in one reading and absent in the other)", path)
+			}
+			return ""
+		}
+		return firstDifference(a.Elem(), b.Elem(), path)
+	case reflect.Struct:
+		for i := 0; i < a.NumField(); i++ {
+			if !a.Type().Field(i).IsExported() {
+				continue
+			}
+			name := a.Type().Field(i).Name
+			if path != "" {
+				name = path + "." + name
+			}
+			if d := firstDifference(a.Field(i), b.Field(i), name); d != "" {
+				return d
+			}
+		}
+		return ""
+	case reflect.Slice, reflect.Array:
+		if a.Len() != b.Len() {
+			return fmt.Sprintf(" (at %s: %d elements in the document, %d in the signed form)", path, a.Len(), b.Len())
+		}
+		for i := 0; i < a.Len(); i++ {
+			if d := firstDifference(a.Index(i), b.Index(i), fmt.Sprintf("%s[%d]", path, i)); d != "" {
+				return d
+			}
+		}
+		return ""
+	case reflect.Map:
+		for _, k := range a.MapKeys() {
+			bv := b.MapIndex(k)
+			if !bv.IsValid() {
+				return fmt.Sprintf(" (at %s: key %v is in the document and not in the signed form)", path, k)
+			}
+			if d := firstDifference(a.MapIndex(k), bv, fmt.Sprintf("%s[%v]", path, k)); d != "" {
+				return d
+			}
+		}
+		if a.Len() != b.Len() {
+			return fmt.Sprintf(" (at %s: the signed form holds a key the document does not)", path)
+		}
+		return ""
+	}
+	if !a.CanInterface() || reflect.DeepEqual(a.Interface(), b.Interface()) {
+		return ""
+	}
+	return fmt.Sprintf(" (at %s: %q in the document, %q in the signed form)", path, fmt.Sprint(a.Interface()), fmt.Sprint(b.Interface()))
 }
