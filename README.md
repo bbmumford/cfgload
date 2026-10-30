@@ -133,6 +133,27 @@ cfgload.Load(&cfg, cfgload.LoadOptions{
 })
 ```
 
+### Per-Setting Environment Fallback
+
+A string field with an `env` tag is read from its variable through
+[envreq](https://github.com/bbmumford/envreq) when the loaded document leaves it
+empty. The document wins: a field it fills is kept and its variable is not read.
+`sensitive` keeps the value out of envreq's reports; `required` fails the load
+when neither source supplies the setting, and the error names the setting's
+path and its variable, never a value.
+
+```go
+type DBConfig struct {
+    URL   string `yaml:"url" env:"DB_URL,required"`
+    Token string `yaml:"token" env:"DB_TOKEN,sensitive,required"`
+}
+```
+
+The fill runs after the document parses (or after `EnvLoader` when the fetch
+fails) and before `Validate()`. `LoadOptions.EnvLookup` replaces the envreq read,
+and `FillFromEnv` and `EnvFields` apply and list the tags without loading a
+document. Only string fields take a tag.
+
 ### With Auto-Reload
 
 Automatically reload configuration periodically:
@@ -198,6 +219,7 @@ type LoadOptions struct {
     PublicKey        string                       // Base64-encoded Ed25519 public key
     AllowEnvFallback bool                         // Fall back to env vars on fetch failure
     EnvLoader        func(target interface{}) error // Populate target from env vars
+    EnvLookup        EnvLookup                    // Reads env-tagged settings (default: envreq)
     Validator        func(target interface{}) error // External validator (deprecated)
     EnableReload     bool                         // Enable periodic reloading
     ReloadInterval   time.Duration                // Reload frequency (default: 5m)
@@ -219,6 +241,12 @@ func MustLoad(target interface{}, opts LoadOptions)
 
 // Stop automatic reloading for a target
 func StopReload(target interface{})
+
+// Fill every empty env-tagged string field, refusing a missing required one
+func FillFromEnv(target interface{}, lookup EnvLookup) error
+
+// List the settings a target's env tags name
+func EnvFields(target interface{}) ([]EnvVar, error)
 ```
 
 ### Registry Functions

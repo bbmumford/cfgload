@@ -38,6 +38,11 @@ type LoadOptions struct {
 	// The loader should populate the target from environment variables
 	EnvLoader func(target interface{}) error
 
+	// EnvLookup reads the variable a field's env tag names when the loaded
+	// value leaves that field empty; see FillFromEnv. If nil, each variable is
+	// read through envreq as an optional requirement.
+	EnvLookup EnvLookup
+
 	// Validator is called after parsing to validate the configuration
 	// If nil, no validation is performed (use type's Validate() method manually)
 	Validator func(target interface{}) error
@@ -125,6 +130,10 @@ func Load(target interface{}, opts LoadOptions) error {
 				}
 			}
 
+			if fillErr := FillFromEnv(target, opts.EnvLookup); fillErr != nil {
+				return fmt.Errorf("fetch failed and env fallback failed: fetch=%v, env=%w", err, fillErr)
+			}
+
 			// Proceed to validation (which may also handle env fallback)
 			if opts.Validator != nil {
 				if valErr := opts.Validator(target); valErr != nil {
@@ -172,6 +181,12 @@ func Load(target interface{}, opts LoadOptions) error {
 	// Parse config data
 	if err := parse.Parse(data, target, opts.Format); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Fill every env-tagged setting the document left empty, so Validate below
+	// sees the value the endpoint will run with.
+	if err := FillFromEnv(target, opts.EnvLookup); err != nil {
+		return err
 	}
 
 	// Automatically call Validate() if the type implements it
@@ -261,6 +276,7 @@ func startReload(target interface{}, opts LoadOptions) {
 					VerifySignature: opts.VerifySignature,
 					PublicKey:       opts.PublicKey,
 					Validator:       opts.Validator,
+					EnvLookup:       opts.EnvLookup,
 					// registry settings
 					Register: opts.Register,
 					Name:     opts.Name,
