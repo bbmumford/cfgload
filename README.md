@@ -116,6 +116,37 @@ cfgload.Load(&cfg, cfgload.LoadOptions{
 })
 ```
 
+### With a Judge
+
+A signed document may carry a header inside its signed bytes, under the
+top-level key `header` (`HeaderKey`): `subject`, `version` and `expiresAt`
+(`Header`). cfgload decides nothing from it. `LoadOptions.Judge` is handed a
+`Verified` for each document after its signature verified and its value
+validated, before the target is set: the header read from the form the
+signature covers (`Stamped` false when there is none), the public key it
+verified under, and the decoded value. An error refuses the document: `Load`
+returns it with the target unchanged, and a reload keeps the value in force and
+reports it to `OnReloadError`. A Judge on a load with `VerifySignature` off is
+refused. `ParseHeader` reads a document's header without verifying it, for a
+signer that stamps the next version of a document it re-signs.
+
+```go
+cfgload.Load(&cfg, cfgload.LoadOptions{
+    URL:             "https://config.example.com/mesh.yaml",
+    VerifySignature: true,
+    PublicKey:       os.Getenv("CONFIG_PUBLIC_KEY"),
+    Judge:           judge.Judge, // e.g. a trust-chain verifier's per-document judge
+})
+```
+
+### Load Is All Or Nothing
+
+`Load` decodes into a copy of the target, fills it from the environment,
+validates it and hands it to the Judge, and only then sets the target: a
+document refused at any step leaves the target as the caller had it. A first
+load keeps the caller's values for fields the document leaves out, so a caller
+can fill defaults, or a document to layer this one over, before it loads.
+
 ### With Environment Fallback
 
 Fall back to environment variables if URL fetch fails:
@@ -177,6 +208,16 @@ cfgload.Load(&cfg, cfgload.LoadOptions{
 cfgload.StopReload(&cfg)
 ```
 
+Each reload decodes the re-read into an empty value of the target's type, fills
+it from the environment, validates it and judges it, and only on success sets
+the target, registers it and hands `OnReload` that value (a pointer the loader
+never writes again); a field the re-read document leaves out reads empty, and a
+refused re-read leaves the value in force. The reload starts even when the
+first load fails: it then loads every interval, from the caller's value as the
+first load did, until one load succeeds, and hands that first value to
+`OnReload`. `StopReload` ends the watch, retry included, and removes its state,
+so the same target can be watched again.
+
 ### Subscribe to Changes
 
 Get notified when a config is updated:
@@ -221,6 +262,7 @@ type LoadOptions struct {
     EnvLoader        func(target interface{}) error // Populate target from env vars
     EnvLookup        EnvLookup                    // Reads env-tagged settings (default: envreq)
     Validator        func(target interface{}) error // External validator (deprecated)
+    Judge            func(Verified) error         // Decides each verified document before it is committed
     EnableReload     bool                         // Enable periodic reloading
     ReloadInterval   time.Duration                // Reload frequency (default: 5m)
     OnReload         func(target interface{})     // Called after successful reload

@@ -47,13 +47,29 @@ type LoadOptions struct {
 	// If nil, no validation is performed (use type's Validate() method manually)
 	Validator func(target interface{}) error
 
-	// EnableReload enables automatic periodic reloading
+	// Judge is handed each verified document before Load commits it (Verified:
+	// its header, the key its signature verified under and the decoded,
+	// validated value). An error refuses the document: Load returns it with the
+	// caller's target as it was, and a reload keeps the value in force and
+	// reports it to OnReloadError. Every reload calls it again. Load refuses a
+	// Judge on a load whose signature it does not verify, since a header no
+	// signature covers can be written by anyone who serves the document; a load
+	// that falls back to the environment has no document and calls no Judge.
+	Judge func(Verified) error
+
+	// EnableReload enables automatic periodic reloading. The reload starts even
+	// when the first load fails: it then loads every ReloadInterval until one
+	// load succeeds, and goes on reloading from there, until StopReload.
 	EnableReload bool
 
 	// ReloadInterval is how often to reload (default: 5 minutes)
 	ReloadInterval time.Duration
 
-	// OnReload is called after each successful reload with the new config
+	// OnReload is called with each value a reload commits: every reload that
+	// loads after a first Load that succeeded, and also the first load that
+	// succeeds after a first Load that failed, since that caller has been handed
+	// no value. The value is a pointer of the target's type that the loader
+	// never writes again; the target holds an equal value.
 	OnReload func(target interface{})
 
 	// OnReloadError is called if reload fails
@@ -70,13 +86,18 @@ type LoadOptions struct {
 	Name string
 }
 
-// reloadState tracks reload goroutines
+// reloadState is one target's watch: stop ends it, and mu orders a reload's
+// commit into the target against StopReload, so that nothing is written into
+// the target once StopReload has returned.
 type reloadState struct {
-	stopChan chan struct{}
-	running  bool
-	mu       sync.Mutex
+	stop    chan struct{}
+	mu      sync.Mutex
+	stopped bool
 }
 
+// reloadStates holds the watch of each target that has one; StopReload removes
+// the target's entry, so a stopped target holds no state and can be watched
+// again.
 var (
 	reloadStates = make(map[interface{}]*reloadState)
 	reloadMu     sync.Mutex
@@ -84,6 +105,12 @@ var (
 
 // Load is the universal config loader
 // It fetches, parses, optionally verifies, and validates configuration
+//
+// Load decodes the document into a copy of what target holds, fills it from
+// the environment, validates it and hands it to the Judge, and only then sets
+// target to it, so a document any step refuses leaves target as the caller had
+// it. Fields the document leaves out keep the caller's values: a caller may
+// fill target with defaults, or a document to layer this one over, first.
 //
 // Example:
 //
@@ -97,10 +124,77 @@ func Load(target interface{}, opts LoadOptions) error {
 	if target == nil {
 		return fmt.Errorf("target cannot be nil")
 	}
+	t := reflect.ValueOf(target)
+	if t.Kind() != reflect.Ptr || t.IsNil() {
+		return fmt.Errorf("target must be a non-nil pointer, got %T", target)
+	}
+	if opts.Judge != nil && !opts.VerifySignature {
+		return fmt.Errorf("a judged load verifies the document's signature: VerifySignature is off")
+	}
+
+	// The watch is reserved before the first load so a StopReload made while
+	// it runs ends the reload it would start.
+	var state *reloadState
+	if opts.EnableReload {
+		state = reserveReload(target)
+	}
+
+	value, err := loadValue(target, opts, false, true)
+	if err != nil {
+		if state != nil {
+			if opts.URL == "" {
+				// Nothing to load again: the watch is released, not retried.
+				StopReload(target)
+			} else {
+				startReload(target, state, opts, true)
+			}
+		}
+		return err
+	}
+	t.Elem().Set(value.Elem())
+
+	// Register in registry if requested (after successful load/validation)
+	if opts.Register {
+		if err := UpdateValue(registryName(target, opts), target); err != nil {
+			if state != nil {
+				startReload(target, state, opts, false)
+			}
+			return fmt.Errorf("failed to register config '%s': %w", registryName(target, opts), err)
+		}
+	}
+
+	if state != nil {
+		startReload(target, state, opts, false)
+	}
+	return nil
+}
+
+// registryName is the registry key a load registers under.
+func registryName(target interface{}, opts LoadOptions) string {
+	if opts.Name != "" {
+		return opts.Name
+	}
+	return keyFor(target, "")
+}
+
+// loadValue loads one document and returns it as a new pointer of target's
+// type, without touching target. fresh starts the value empty, as a reload
+// does, so a field the document leaves out reads empty rather than as the last
+// load left it; otherwise it starts as a deep copy of what target holds, as a
+// first load does, so the caller's defaults and layers stay under the
+// document. allowFallback lets a failed fetch fall back to the environment.
+func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) (reflect.Value, error) {
+	elem := reflect.ValueOf(target).Elem()
+	value := reflect.New(elem.Type())
+	if !fresh {
+		value.Elem().Set(deepCopy(elem))
+	}
+	v := value.Interface()
 
 	// Set default format
-	if opts.Format == "" {
-		opts.Format = parse.FormatAuto
+	format := opts.Format
+	if format == "" {
+		format = parse.FormatAuto
 	}
 
 	var data []byte
@@ -109,117 +203,93 @@ func Load(target interface{}, opts LoadOptions) error {
 	// Fetch config data if URL is provided
 	if opts.URL != "" {
 		data, err = fetch.Fetch(opts.URL, opts.AuthToken)
-	} else if !opts.AllowEnvFallback {
-		return fmt.Errorf("URL is required")
+	} else if !(allowFallback && opts.AllowEnvFallback) {
+		return reflect.Value{}, fmt.Errorf("URL is required")
 	} else {
 		// URL is empty but fallback is allowed, treat as fetch error
 		err = fmt.Errorf("URL is empty")
 	}
 
 	if err != nil {
-		// Try environment fallback if enabled
-		if opts.AllowEnvFallback {
-			if opts.URL != "" {
-				log.Printf("Failed to fetch config from %s: %v, falling back to environment variables", opts.URL, err)
-			}
-
-			// If EnvLoader is provided, use it
-			if opts.EnvLoader != nil {
-				if envErr := opts.EnvLoader(target); envErr != nil {
-					return fmt.Errorf("fetch failed and env fallback failed: fetch=%v, env=%v", err, envErr)
-				}
-			}
-
-			if fillErr := FillFromEnv(target, opts.EnvLookup); fillErr != nil {
-				return fmt.Errorf("fetch failed and env fallback failed: fetch=%v, env=%w", err, fillErr)
-			}
-
-			// Proceed to validation (which may also handle env fallback)
-			if opts.Validator != nil {
-				if valErr := opts.Validator(target); valErr != nil {
-					return fmt.Errorf("env config validation failed: %w", valErr)
-				}
-			}
-
-			// Also check for self-validation
-			if validator, ok := target.(interface{ Validate() error }); ok {
-				if err := validator.Validate(); err != nil {
-					return fmt.Errorf("env config validation failed: %w", err)
-				}
-			}
-
-			// Register in registry if requested (after successful load/validation)
-			if opts.Register {
-				name := opts.Name
-				if name == "" {
-					name = keyFor(target, "")
-				}
-				if err := UpdateValue(name, target); err != nil {
-					return fmt.Errorf("failed to register config '%s': %w", name, err)
-				}
-			}
-
-			return nil
+		if !(allowFallback && opts.AllowEnvFallback) {
+			return reflect.Value{}, fmt.Errorf("failed to fetch config: %w", err)
 		}
-		return fmt.Errorf("failed to fetch config: %w", err)
+		if opts.URL != "" {
+			log.Printf("Failed to fetch config from %s: %v, falling back to environment variables", opts.URL, err)
+		}
+		if opts.EnvLoader != nil {
+			if envErr := opts.EnvLoader(v); envErr != nil {
+				return reflect.Value{}, fmt.Errorf("fetch failed and env fallback failed: fetch=%v, env=%v", err, envErr)
+			}
+		}
+		if fillErr := FillFromEnv(v, opts.EnvLookup); fillErr != nil {
+			return reflect.Value{}, fmt.Errorf("fetch failed and env fallback failed: fetch=%v, env=%w", err, fillErr)
+		}
+		if opts.Validator != nil {
+			if valErr := opts.Validator(v); valErr != nil {
+				return reflect.Value{}, fmt.Errorf("env config validation failed: %w", valErr)
+			}
+		}
+		if validator, ok := v.(interface{ Validate() error }); ok {
+			if err := validator.Validate(); err != nil {
+				return reflect.Value{}, fmt.Errorf("env config validation failed: %w", err)
+			}
+		}
+		return value, nil
 	}
 
 	// Verify signature if enabled
+	var header Header
+	var stamped bool
 	if opts.VerifySignature {
 		if opts.PublicKey == "" {
-			return fmt.Errorf("publicKey is required when verifySignature is enabled")
+			return reflect.Value{}, fmt.Errorf("publicKey is required when verifySignature is enabled")
 		}
 		reread, rereadIsJSON, err := verify.Reread(data, opts.PublicKey)
 		if err != nil {
-			return fmt.Errorf("signature verification failed: %w", err)
+			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
 		}
-		if err := loadsAsSigned(data, opts.Format, reread, rereadIsJSON, target); err != nil {
-			return fmt.Errorf("signature verification failed: %w", err)
+		if err := loadsAsSigned(data, format, reread, rereadIsJSON, target); err != nil {
+			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
+		}
+		// The header is read from the form the signature covers, never from
+		// the document's own bytes.
+		if header, stamped, err = ParseHeader(reread); err != nil {
+			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
 		}
 	}
 
 	// Parse config data
-	if err := parse.Parse(data, target, opts.Format); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+	if err := parse.Parse(data, v, format); err != nil {
+		return reflect.Value{}, fmt.Errorf("failed to parse config: %w", err)
 	}
 
 	// Fill every env-tagged setting the document left empty, so Validate below
 	// sees the value the endpoint will run with.
-	if err := FillFromEnv(target, opts.EnvLookup); err != nil {
-		return err
+	if err := FillFromEnv(v, opts.EnvLookup); err != nil {
+		return reflect.Value{}, err
 	}
 
 	// Automatically call Validate() if the type implements it
-	if validator, ok := target.(interface{ Validate() error }); ok {
+	if validator, ok := v.(interface{ Validate() error }); ok {
 		if err := validator.Validate(); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
+			return reflect.Value{}, fmt.Errorf("validation failed: %w", err)
 		}
 	}
 
 	// Legacy: Validate if external validator provided (deprecated, use type's Validate() method)
 	if opts.Validator != nil {
-		if err := opts.Validator(target); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
+		if err := opts.Validator(v); err != nil {
+			return reflect.Value{}, fmt.Errorf("validation failed: %w", err)
 		}
 	}
 
-	// Start reload goroutine if enabled
-	if opts.EnableReload {
-		startReload(target, opts)
-	}
-
-	// Register in registry if requested (after successful load/validation)
-	if opts.Register {
-		name := opts.Name
-		if name == "" {
-			name = keyFor(target, "")
-		}
-		if err := UpdateValue(name, target); err != nil {
-			return fmt.Errorf("failed to register config '%s': %w", name, err)
+	if opts.Judge != nil {
+		if err := opts.Judge(Verified{Header: header, Stamped: stamped, PublicKey: opts.PublicKey, Value: v}); err != nil {
+			return reflect.Value{}, fmt.Errorf("the document was refused: %w", err)
 		}
 	}
-
-	return nil
+	return value, nil
 }
 
 // MustLoad is like Load but panics on error
@@ -230,36 +300,30 @@ func MustLoad(target interface{}, opts LoadOptions) {
 	}
 }
 
-// startReload starts a background goroutine to periodically reload config
-func startReload(target interface{}, opts LoadOptions) {
+// reserveReload returns a new watch state for target, or nil when target is
+// already watched, so a second Load with EnableReload on one target starts no
+// second reload.
+func reserveReload(target interface{}) *reloadState {
 	reloadMu.Lock()
 	defer reloadMu.Unlock()
-
-	// Check if already reloading
-	state, exists := reloadStates[target]
-	if exists {
-		state.mu.Lock()
-		if state.running {
-			state.mu.Unlock()
-			return // Already running
-		}
-		state.mu.Unlock()
-	} else {
-		state = &reloadState{
-			stopChan: make(chan struct{}),
-		}
-		reloadStates[target] = state
+	if _, exists := reloadStates[target]; exists {
+		return nil
 	}
+	state := &reloadState{stop: make(chan struct{})}
+	reloadStates[target] = state
+	return state
+}
 
-	// Set default reload interval
+// startReload runs target's watch on state: every interval it loads the
+// document again with opts and, on success, commits it to target, registers it
+// and hands it to OnReload. firstPending is set when the first Load failed:
+// each load then starts from the caller's value, as that first Load did, until
+// one succeeds, and from then on from an empty value.
+func startReload(target interface{}, state *reloadState, opts LoadOptions, firstPending bool) {
 	interval := opts.ReloadInterval
-	if interval == 0 {
+	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
-
-	state.mu.Lock()
-	state.running = true
-	state.mu.Unlock()
 
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -267,58 +331,118 @@ func startReload(target interface{}, opts LoadOptions) {
 
 		for {
 			select {
+			case <-state.stop:
+				return
 			case <-ticker.C:
-				// Reload config
-				if err := Load(target, LoadOptions{
-					URL:             opts.URL,
-					AuthToken:       opts.AuthToken,
-					Format:          opts.Format,
-					VerifySignature: opts.VerifySignature,
-					PublicKey:       opts.PublicKey,
-					Validator:       opts.Validator,
-					EnvLookup:       opts.EnvLookup,
-					// registry settings
-					Register: opts.Register,
-					Name:     opts.Name,
-					// Don't enable reload in the reload call
-					EnableReload: false,
-				}); err != nil {
-					if opts.OnReloadError != nil {
-						opts.OnReloadError(err)
-					} else {
-						log.Printf("Config reload failed: %v", err)
-					}
+			}
+			value, err := loadValue(target, opts, !firstPending, false)
+			if err != nil {
+				if opts.OnReloadError != nil {
+					opts.OnReloadError(err)
 				} else {
-					if opts.OnReload != nil {
-						opts.OnReload(target)
-					}
+					log.Printf("Config reload failed: %v", err)
 				}
-			case <-state.stopChan:
-				state.mu.Lock()
-				state.running = false
+				continue
+			}
+			state.mu.Lock()
+			if state.stopped {
 				state.mu.Unlock()
 				return
+			}
+			reflect.ValueOf(target).Elem().Set(value.Elem())
+			state.mu.Unlock()
+			firstPending = false
+			if opts.Register {
+				if err := UpdateValue(registryName(target, opts), value.Interface()); err != nil {
+					log.Printf("Config reload: failed to register config '%s': %v", registryName(target, opts), err)
+				}
+			}
+			if opts.OnReload != nil {
+				opts.OnReload(value.Interface())
 			}
 		}
 	}()
 }
 
-// StopReload stops the reload goroutine for a target
+// StopReload stops the reload goroutine for a target and removes its state, so
+// a later Load with EnableReload on the same target starts a new watch. Once it
+// returns no reload commits into target; an OnReload already running finishes.
+// Calling it for a target with no watch does nothing.
 func StopReload(target interface{}) {
 	reloadMu.Lock()
-	defer reloadMu.Unlock()
-
 	state, exists := reloadStates[target]
+	if exists {
+		delete(reloadStates, target)
+	}
+	reloadMu.Unlock()
 	if !exists {
 		return
 	}
-
 	state.mu.Lock()
-	if state.running {
-		close(state.stopChan)
-		state.running = false
+	if !state.stopped {
+		state.stopped = true
+		close(state.stop)
 	}
 	state.mu.Unlock()
+}
+
+// deepCopy returns a copy of v that shares no pointer, slice, map or interface
+// value with it, so a decode into the copy cannot write through to v. Load
+// copies the caller's target with it before the first load decodes over it,
+// and commits the copy only when the load succeeds. Unexported fields are
+// copied as they are, since no decoder writes them.
+func deepCopy(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(deepCopy(v.Elem()))
+		return out
+	case reflect.Interface:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(deepCopy(v.Elem()))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		for i := 0; i < v.NumField(); i++ {
+			if out.Field(i).CanSet() {
+				out.Field(i).Set(deepCopy(v.Field(i)))
+			}
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(deepCopy(v.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(deepCopy(v.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), deepCopy(iter.Value()))
+		}
+		return out
+	}
+	return v
 }
 
 // loadsAsSigned returns an error unless the document fills a target with the
