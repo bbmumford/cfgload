@@ -245,16 +245,7 @@ func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) 
 		if opts.PublicKey == "" {
 			return reflect.Value{}, fmt.Errorf("publicKey is required when verifySignature is enabled")
 		}
-		reread, rereadIsJSON, err := verify.Reread(data, opts.PublicKey)
-		if err != nil {
-			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
-		}
-		if err := loadsAsSigned(data, format, reread, rereadIsJSON, target); err != nil {
-			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
-		}
-		// The header is read from the form the signature covers, never from
-		// the document's own bytes.
-		if header, stamped, err = ParseHeader(reread); err != nil {
+		if header, stamped, err = signedHeader(data, format, opts.PublicKey, target); err != nil {
 			return reflect.Value{}, fmt.Errorf("signature verification failed: %w", err)
 		}
 	}
@@ -290,6 +281,102 @@ func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) 
 		}
 	}
 	return value, nil
+}
+
+// signedHeader verifies data's signature under publicKey, checks that data decodes
+// into target's type as the signed form does, and answers the header read from the
+// signed form, never from the document's own bytes.
+func signedHeader(data []byte, format parse.Format, publicKey string, target interface{}) (Header, bool, error) {
+	reread, rereadIsJSON, err := verify.Reread(data, publicKey)
+	if err != nil {
+		return Header{}, false, err
+	}
+	if err := loadsAsSigned(data, format, reread, rereadIsJSON, target); err != nil {
+		return Header{}, false, err
+	}
+	return ParseHeader(reread)
+}
+
+// BytesOptions configures LoadBytes.
+type BytesOptions struct {
+	// Format is the document's format (yaml, json, auto); empty is auto.
+	Format parse.Format
+
+	// PublicKeys are the base64 Ed25519 keys the signature may verify under,
+	// tried in order: the caller's authenticated signers (for a device, the keys
+	// its trust chain authenticates). The key that verifies is the one the Judge
+	// is handed.
+	PublicKeys []string
+
+	// Validator is called after parsing, beside the type's own Validate.
+	Validator func(target interface{}) error
+
+	// Judge decides each verified document, as Load's Judge does: its header,
+	// the key it verified under and the decoded value. Required.
+	Judge func(Verified) error
+}
+
+// LoadBytes loads a signed document received as bytes, over an RPC rather than
+// from a URL: Load's entry for documents a caller is handed. The signature must
+// verify under one of PublicKeys and the Judge must admit the verified header,
+// key and value before target is set; a refusal leaves target as it was. Nothing
+// is fetched, no environment is read and nothing reloads.
+func LoadBytes(target interface{}, data []byte, opts BytesOptions) error {
+	if target == nil {
+		return fmt.Errorf("target cannot be nil")
+	}
+	t := reflect.ValueOf(target)
+	if t.Kind() != reflect.Ptr || t.IsNil() {
+		return fmt.Errorf("target must be a non-nil pointer, got %T", target)
+	}
+	if opts.Judge == nil {
+		return fmt.Errorf("a document received as bytes is judged: no Judge")
+	}
+	if len(opts.PublicKeys) == 0 {
+		return fmt.Errorf("a document received as bytes verifies under a key: no PublicKeys")
+	}
+	format := opts.Format
+	if format == "" {
+		format = parse.FormatAuto
+	}
+	var (
+		header  Header
+		stamped bool
+		key     string
+		lastErr error
+	)
+	for _, k := range opts.PublicKeys {
+		h, st, err := signedHeader(data, format, k, target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		header, stamped, key = h, st, k
+		break
+	}
+	if key == "" {
+		return fmt.Errorf("signature verification failed under every key: %w", lastErr)
+	}
+	value := reflect.New(t.Elem().Type())
+	v := value.Interface()
+	if err := parse.Parse(data, v, format); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+	if validator, ok := v.(interface{ Validate() error }); ok {
+		if err := validator.Validate(); err != nil {
+			return fmt.Errorf("validation failed: %w", err)
+		}
+	}
+	if opts.Validator != nil {
+		if err := opts.Validator(v); err != nil {
+			return fmt.Errorf("validation failed: %w", err)
+		}
+	}
+	if err := opts.Judge(Verified{Header: header, Stamped: stamped, PublicKey: key, Value: v}); err != nil {
+		return fmt.Errorf("the document was refused: %w", err)
+	}
+	t.Elem().Set(value.Elem())
+	return nil
 }
 
 // MustLoad is like Load but panics on error
