@@ -1,6 +1,6 @@
 # cfgload
 
-A Go package for universal configuration loading with support for multiple sources, formats, signature verification, and an in-process registry for global config access.
+cfgload is a Go package for configuration loading with support for multiple sources, formats, signature verification, and an in-process registry for global config access.
 
 ## Overview
 
@@ -394,6 +394,41 @@ func TestConfig(t *testing.T) {
 }
 ```
 
-## License
+## Dependencies
 
-MIT
+- `github.com/bbmumford/envreq`: the environment fallback declares each
+  variable it reads through envreq.
+- `gopkg.in/yaml.v3`. Signature checks use the standard library's Ed25519
+  (`internal/verify`).
+
+## Used by
+
+Importers in the ORBTR estate:
+
+- `github.com/ORBTR/Library/endpoint`, `brand`, `keyvault/enccfg`,
+  `keyvault/kvboot` and `trustchain/signedconfig`: every endpoint's
+  configuration and the signed configuration documents.
+- `github.com/bbmumford/loom/node` and `node/capabilities`, and
+  `github.com/bbmumford/flyio`.
+- `github.com/ORBTR/api.orbtr.ai`, `github.com/ORBTR/help.orbtr.io`,
+  `github.com/ORBTR/node.orbtr.io`, `github.com/ORBTR/orbtr.io`,
+  `github.com/ORBTR/tools/keygen` and
+  `github.com/ORBTR/constellation/domain/identity/trust/partitionkeys`.
+- Tests only: packages of `github.com/ORBTR/cortex`,
+  `github.com/ORBTR/constellation` and `github.com/ORBTR/Library`.
+
+## Platforms and build
+
+Pure Go, no cgo and no build tags. The module's `go` directive is 1.23.2.
+
+## Licence
+
+MIT. Copyright (c) 2026 Brandon Miller-Mumford. The full text is in
+[LICENSE](LICENSE).
+
+## Contributing
+
+[AGENTS.md](AGENTS.md) holds the repository's two rules, for people and coding
+agents alike: no temporary documents in the repository, and conventional commit
+messages that stand on their own. [CLAUDE.md](CLAUDE.md) imports it for Claude
+Code.
