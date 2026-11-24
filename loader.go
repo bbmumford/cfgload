@@ -31,7 +31,10 @@ type LoadOptions struct {
 	// Required if VerifySignature is true
 	PublicKey string
 
-	// AllowEnvFallback enables environment variable fallback if URL fetch fails
+	// AllowEnvFallback enables environment variable fallback if URL fetch fails.
+	// A judged load (Judge set) never falls back: its fetch failure is returned,
+	// because the environment carries no signature and no header for the Judge
+	// to check, and a fallback would skip both checks the caller asked for.
 	AllowEnvFallback bool
 
 	// EnvLoader is called if AllowEnvFallback is true and URL fetch fails
@@ -53,8 +56,8 @@ type LoadOptions struct {
 	// caller's target as it was, and a reload keeps the value in force and
 	// reports it to OnReloadError. Every reload calls it again. Load refuses a
 	// Judge on a load whose signature it does not verify, since a header no
-	// signature covers can be written by anyone who serves the document; a load
-	// that falls back to the environment has no document and calls no Judge.
+	// signature covers can be written by anyone who serves the document, and a
+	// judged load never falls back to the environment (AllowEnvFallback).
 	Judge func(Verified) error
 
 	// EnableReload enables automatic periodic reloading. The reload starts even
@@ -213,6 +216,9 @@ func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) 
 	if err != nil {
 		if !(allowFallback && opts.AllowEnvFallback) {
 			return reflect.Value{}, fmt.Errorf("failed to fetch config: %w", err)
+		}
+		if opts.Judge != nil {
+			return reflect.Value{}, fmt.Errorf("failed to fetch config, and a judged load does not fall back to the environment: %w", err)
 		}
 		if opts.URL != "" {
 			log.Printf("Failed to fetch config from %s: %v, falling back to environment variables", opts.URL, err)
