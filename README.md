@@ -149,7 +149,9 @@ can fill defaults, or a document to layer this one over, before it loads.
 
 ### With Environment Fallback
 
-Fall back to environment variables if URL fetch fails:
+Fall back to environment variables if URL fetch fails. A load with a `Judge`
+never falls back: it returns the fetch failure, so a judged document is never
+replaced by unchecked values.
 
 ```go
 cfgload.Load(&cfg, cfgload.LoadOptions{
