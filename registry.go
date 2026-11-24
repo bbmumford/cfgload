@@ -13,8 +13,65 @@ type registryEntry struct {
 	v    atomic.Value // stores a pointer to a concrete config type
 	typ  reflect.Type // concrete type (usually a pointer to struct)
 	mu   sync.Mutex   // protects subscribers and type init
-	subs map[int]func(interface{})
+	subs map[int]*subscriber
 	next int
+}
+
+// subscriber delivers one callback's snapshots in the order UpdateValue stored
+// them, one at a time, off the updating goroutine: UpdateValue queues each
+// snapshot and at most one goroutine per subscriber drains the queue, so a
+// slow callback delays only its own later deliveries and a later snapshot
+// never reaches a callback before an earlier one.
+type subscriber struct {
+	fn      func(interface{})
+	mu      sync.Mutex
+	queue   []interface{}
+	running bool
+	stopped bool
+}
+
+// deliver queues snap and starts the drain when none is running.
+func (s *subscriber) deliver(snap interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
+	s.queue = append(s.queue, snap)
+	if !s.running {
+		s.running = true
+		go s.drain()
+	}
+}
+
+// drain calls fn with each queued snapshot in order until the queue is empty
+// or the subscriber is stopped. A panicking callback is recovered so one bad
+// subscriber cannot end the process, and the next snapshot is still
+// delivered.
+func (s *subscriber) drain() {
+	for {
+		s.mu.Lock()
+		if s.stopped || len(s.queue) == 0 {
+			s.running = false
+			s.queue = nil
+			s.mu.Unlock()
+			return
+		}
+		snap := s.queue[0]
+		s.queue = s.queue[1:]
+		s.mu.Unlock()
+		func() {
+			defer func() { _ = recover() }()
+			s.fn(snap)
+		}()
+	}
+}
+
+// stop ends delivery: a snapshot still queued is dropped.
+func (s *subscriber) stop() {
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
 }
 
 var (
@@ -51,7 +108,7 @@ func getOrCreateEntry(name string) *registryEntry {
 	regMu.Lock()
 	defer regMu.Unlock()
 	if e = reg[name]; e == nil {
-		e = &registryEntry{subs: make(map[int]func(interface{}))}
+		e = &registryEntry{subs: make(map[int]*subscriber)}
 		reg[name] = e
 	}
 	return e
@@ -109,14 +166,10 @@ func UpdateValue(name string, value interface{}) error {
 
 	e.v.Store(snap)
 
-	// notify subscribers non-blocking
-	for _, fn := range e.subs {
-		f := fn
-		s := snap
-		go func() {
-			defer func() { _ = recover() }()
-			f(s)
-		}()
+	// Queue the snapshot on every subscriber while e.mu is held, so two
+	// updates reach each subscriber in the order they were stored.
+	for _, s := range e.subs {
+		s.deliver(snap)
 	}
 	return nil
 }
@@ -165,7 +218,9 @@ func MustGetAs[T any](name string) T {
 }
 
 // Subscribe registers a callback that is invoked with the new snapshot
-// whenever the value under name is updated. Returns an unsubscribe function.
+// whenever the value under name is updated, on a goroutine of its own and in
+// the order the updates were stored. Returns an unsubscribe function, after
+// which no further snapshot is delivered.
 func Subscribe(name string, fn func(interface{})) (func(), error) {
 	if name == "" || fn == nil {
 		return func() {}, fmt.Errorf("invalid subscribe args")
@@ -174,13 +229,15 @@ func Subscribe(name string, fn func(interface{})) (func(), error) {
 	e.mu.Lock()
 	id := e.next
 	e.next++
-	e.subs[id] = fn
+	s := &subscriber{fn: fn}
+	e.subs[id] = s
 	e.mu.Unlock()
 
 	return func() {
 		e.mu.Lock()
 		delete(e.subs, id)
 		e.mu.Unlock()
+		s.stop()
 	}, nil
 }
 
