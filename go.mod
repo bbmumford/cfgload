@@ -3,7 +3,7 @@ module github.com/bbmumford/cfgload
 go 1.23.2
 
 require (
-	github.com/bbmumford/envreq v0.0.1
+	github.com/bbmumford/envreq v0.0.2
 	gopkg.in/yaml.v3 v3.0.1
 )
 
