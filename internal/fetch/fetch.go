@@ -143,7 +143,9 @@ func fetchHTTP(configURL, authToken, forceNetwork string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch config: %w", err)
 	}
-	defer resp.Body.Close()
+	// Fetch answers with the bytes it read or the status it refused; a failed
+	// close of the body changes neither, so its error is dropped.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch config, status: %d %s", resp.StatusCode, resp.Status)

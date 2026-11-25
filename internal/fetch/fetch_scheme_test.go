@@ -34,7 +34,9 @@ func TestFetchAdmitsPlainHTTPToLoopback(t *testing.T) {
 	var auth atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth.Store(r.Header.Get("Authorization"))
-		w.Write([]byte("name: doc\n"))
+		if _, err := w.Write([]byte("name: doc\n")); err != nil {
+			t.Errorf("w.Write: %v", err)
+		}
 	}))
 	defer srv.Close()
 	body, err := Fetch(srv.URL+"/doc.yaml", "tok")

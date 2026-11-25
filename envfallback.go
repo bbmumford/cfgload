@@ -105,7 +105,7 @@ type envField struct {
 
 func envFields(target interface{}) ([]envField, error) {
 	v := reflect.ValueOf(target)
-	if !v.IsValid() || v.Kind() != reflect.Ptr || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
 		return nil, nil
 	}
 	var out []envField
@@ -150,7 +150,7 @@ func walkEnvValue(v reflect.Value, path string, out *[]envField) error {
 	switch v.Kind() {
 	case reflect.Struct:
 		return walkEnv(v, path, out)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() || v.Elem().Kind() != reflect.Struct {
 			return nil
 		}

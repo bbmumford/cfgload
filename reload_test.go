@@ -133,7 +133,10 @@ func TestARefusedReloadLeavesTheValueInForce(t *testing.T) {
 	defer StopReload(&target)
 	writeDoc(t, path, "name: z\nbad: true\n")
 	select {
-	case <-errs:
+	case err := <-errs:
+		if err == nil {
+			t.Fatal("the refused re-read was reported with no error")
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the refused re-read was never reported")
 	}

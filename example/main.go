@@ -35,12 +35,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmp.Name())
+	// The file only demonstrates a load; one left behind in the temporary
+	// directory harms nothing, so a failed removal is dropped.
+	defer func() { _ = os.Remove(tmp.Name()) }()
 
 	if _, err := tmp.WriteString("name: example-app\ntimeout: 45s\n"); err != nil {
 		log.Fatalf("failed to write temp config: %v", err)
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		log.Fatalf("failed to close temp config: %v", err)
+	}
 
 	// Load the config from the file, validate it, and publish to registry.
 	var cfg AppConfig

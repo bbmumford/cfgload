@@ -22,7 +22,9 @@ func trustServer(t *testing.T, srv *httptest.Server) {
 func TestFetchBoundsTheBody(t *testing.T) {
 	var size int
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(strings.Repeat("a", size)))
+		if _, err := w.Write([]byte(strings.Repeat("a", size))); err != nil {
+			t.Errorf("w.Write: %v", err)
+		}
 	}))
 	defer srv.Close()
 	trustServer(t, srv)
@@ -41,7 +43,9 @@ func TestFetchBoundsTheBody(t *testing.T) {
 func TestFetchRefusesARedirectToPlainHTTP(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/moved" {
-			w.Write([]byte("name: doc\n"))
+			if _, err := w.Write([]byte("name: doc\n")); err != nil {
+				t.Errorf("w.Write: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/down" {

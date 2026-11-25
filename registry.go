@@ -89,7 +89,7 @@ func keyFor(target interface{}, explicit string) string {
 	if t == nil {
 		return "<nil>"
 	}
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.PkgPath() == "" {
@@ -124,7 +124,7 @@ func cloneSnapshot(v interface{}) (interface{}, error) {
 	t := reflect.TypeOf(v)
 	// allocate a fresh value of the same type shape
 	var dstVal reflect.Value
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		dstVal = reflect.New(t.Elem())
 	} else {
 		dstVal = reflect.New(t)
@@ -136,7 +136,7 @@ func cloneSnapshot(v interface{}) (interface{}, error) {
 	if err := json.Unmarshal(b, dstVal.Interface()); err != nil {
 		return nil, err
 	}
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return dstVal.Interface(), nil
 	}
 	return dstVal.Elem().Interface(), nil

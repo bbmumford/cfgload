@@ -64,7 +64,9 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	unsubscribe()
-	cfgload.UpdateValue(name, 1)
+	if err := cfgload.UpdateValue(name, 1); err != nil {
+		t.Fatalf("cfgload.UpdateValue: %v", err)
+	}
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
@@ -94,10 +96,16 @@ func TestUnsubscribeDropsQueuedUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfgload.UpdateValue(name, 1)
+	if err := cfgload.UpdateValue(name, 1); err != nil {
+		t.Fatalf("cfgload.UpdateValue: %v", err)
+	}
 	<-entered
-	cfgload.UpdateValue(name, 2)
-	cfgload.UpdateValue(name, 3)
+	if err := cfgload.UpdateValue(name, 2); err != nil {
+		t.Fatalf("cfgload.UpdateValue: %v", err)
+	}
+	if err := cfgload.UpdateValue(name, 3); err != nil {
+		t.Fatalf("cfgload.UpdateValue: %v", err)
+	}
 	unsubscribe()
 	close(release)
 	time.Sleep(100 * time.Millisecond)

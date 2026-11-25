@@ -128,7 +128,7 @@ func Load(target interface{}, opts LoadOptions) error {
 		return fmt.Errorf("target cannot be nil")
 	}
 	t := reflect.ValueOf(target)
-	if t.Kind() != reflect.Ptr || t.IsNil() {
+	if t.Kind() != reflect.Pointer || t.IsNil() {
 		return fmt.Errorf("target must be a non-nil pointer, got %T", target)
 	}
 	if opts.Judge != nil && !opts.VerifySignature {
@@ -206,7 +206,7 @@ func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) 
 	// Fetch config data if URL is provided
 	if opts.URL != "" {
 		data, err = fetch.Fetch(opts.URL, opts.AuthToken)
-	} else if !(allowFallback && opts.AllowEnvFallback) {
+	} else if !allowFallback || !opts.AllowEnvFallback {
 		return reflect.Value{}, fmt.Errorf("URL is required")
 	} else {
 		// URL is empty but fallback is allowed, treat as fetch error
@@ -214,7 +214,7 @@ func loadValue(target interface{}, opts LoadOptions, fresh, allowFallback bool) 
 	}
 
 	if err != nil {
-		if !(allowFallback && opts.AllowEnvFallback) {
+		if !allowFallback || !opts.AllowEnvFallback {
 			return reflect.Value{}, fmt.Errorf("failed to fetch config: %w", err)
 		}
 		if opts.Judge != nil {
@@ -332,7 +332,7 @@ func LoadBytes(target interface{}, data []byte, opts BytesOptions) error {
 		return fmt.Errorf("target cannot be nil")
 	}
 	t := reflect.ValueOf(target)
-	if t.Kind() != reflect.Ptr || t.IsNil() {
+	if t.Kind() != reflect.Pointer || t.IsNil() {
 		return fmt.Errorf("target must be a non-nil pointer, got %T", target)
 	}
 	if opts.Judge == nil {
@@ -486,7 +486,7 @@ func StopReload(target interface{}) {
 // copied as they are, since no decoder writes them.
 func deepCopy(v reflect.Value) reflect.Value {
 	switch v.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() {
 			return reflect.Zero(v.Type())
 		}
@@ -561,7 +561,7 @@ func deepCopy(v reflect.Value) reflect.Value {
 // does not parse, is left for parse.Parse below to refuse.
 func loadsAsSigned(data []byte, format parse.Format, reread []byte, rereadIsJSON bool, target interface{}) error {
 	t := reflect.TypeOf(target)
-	if t == nil || t.Kind() != reflect.Ptr {
+	if t == nil || t.Kind() != reflect.Pointer {
 		return nil
 	}
 	fromDocument := reflect.New(t.Elem())
@@ -591,7 +591,7 @@ func firstDifference(a, b reflect.Value, path string) string {
 		return ""
 	}
 	switch a.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		if a.IsNil() || b.IsNil() {
 			if a.IsNil() != b.IsNil() {
 				return fmt.Sprintf(" (at %s: set in one reading and absent in the other)", path)
