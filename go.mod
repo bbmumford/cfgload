@@ -1,6 +1,6 @@
 module github.com/bbmumford/cfgload
 
-go 1.23.2
+go 1.27.4
 
 require (
 	github.com/bbmumford/envreq v0.0.2
